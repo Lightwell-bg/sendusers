@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}История — Админка рассылок{% endblock %}
+{% block content %}
+  <h1>История кампаний</h1>
+
+  {% if campaigns %}
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Название</th>
+          <th>Боты</th>
+          <th>Статус</th>
+          <th>Создана</th>
+          <th>Завершена</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in campaigns %}
+          <tr>
+            <td><a href="/campaigns/{{ c.id }}">{{ c.id }}</a></td>
+            <td>{{ c.title }}</td>
+            <td>{{ c.bots }}</td>
+            <td><span class="badge {{ status_class(c.status) }}">{{ status_label(c.status) }}</span></td>
+            <td>{{ c.created_at }}</td>
+            <td>{{ c.finished_at or '' }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">Кампаний пока нет.</p>
+  {% endif %}
+{% endblock %}

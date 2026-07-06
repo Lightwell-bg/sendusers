@@ -1,0 +1,26 @@
+<div id="status-panel"
+     {% if polling %}hx-get="/campaigns/{{ campaign.id }}/status" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>
+  <p>Статус:
+    <span class="badge {{ status_class(campaign.status) }}">{{ status_label(campaign.status) }}</span>
+  </p>
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Бот</th>
+        {% for st in recipient_statuses %}<th>{{ recipient_status_label(st) }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for bot in ['A', 'B'] %}
+        {% if bot in campaign.bots %}
+          <tr>
+            <td>{{ bot_labels.get(bot, bot) }}</td>
+            {% for st in recipient_statuses %}
+              <td>{{ counters.get(bot, {}).get(st, 0) }}</td>
+            {% endfor %}
+          </tr>
+        {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

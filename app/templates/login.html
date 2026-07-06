@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вход — Админка рассылок</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="login-page">
+    <form class="login-form" method="post" action="/login">
+      <h1>Админка рассылок</h1>
+      {% if msg %}
+        <div class="flash">{{ msg }}</div>
+      {% endif %}
+      <label for="password">Пароль</label>
+      <input type="password" id="password" name="password" autofocus required>
+      <button type="submit">Войти</button>
+    </form>
+  </main>
+</body>
+</html>

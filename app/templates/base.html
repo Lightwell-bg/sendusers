@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Админка рассылок{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/htmx.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/">Рассылки</a>
+      <nav>
+        <a href="/">Дашборд</a>
+        <a href="/campaigns/new">Новая кампания</a>
+        <a href="/history">История</a>
+        <form action="/logout" method="post" class="inline-form">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <button type="submit" class="link-button">Выйти</button>
+        </form>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    {% if msg %}
+      <div class="flash">{{ msg }}</div>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

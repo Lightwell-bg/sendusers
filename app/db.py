@@ -1,0 +1,354 @@
+"""broadcast.db — собственное хранилище сервиса рассылок.
+
+Кампании, снапшоты получателей, кэш членства в чатах, постоянный список
+заблокировавших бота. Базы ботов этот модуль не трогает (см. sources.py).
+
+SQLite в режиме WAL, одно соединение на процесс, сериализация записи
+через threading.Lock (FastAPI sync-роуты работают в тредпуле).
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+from datetime import datetime, timedelta, timezone
+from typing import Any, Iterable, Optional
+
+from .config import settings
+
+# --- статусы кампании ---
+CAMPAIGN_STATUSES = (
+    "draft", "dry_running", "ready", "running", "paused",
+    "done", "failed", "cancelled",
+)
+# --- статусы получателя ---
+RECIPIENT_STATUSES = ("pending", "sending", "sent", "skipped_member", "blocked", "error")
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS campaigns (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    title         TEXT NOT NULL,
+    message_text  TEXT NOT NULL,
+    parse_mode    TEXT NOT NULL DEFAULT 'HTML',
+    bots          TEXT NOT NULL,                -- 'A' | 'B' | 'A,B'
+    status        TEXT NOT NULL DEFAULT 'draft',
+    created_at    TEXT NOT NULL,
+    dry_run_at    TEXT,
+    started_at    TEXT,
+    finished_at   TEXT,
+    totals_json   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS recipients (
+    campaign_id  INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+    bot          TEXT NOT NULL,                 -- 'A' | 'B'
+    user_id      INTEGER NOT NULL,
+    username     TEXT,
+    user_name    TEXT,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    detail       TEXT,
+    sent_at      TEXT,
+    PRIMARY KEY (campaign_id, bot, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_recipients_status
+    ON recipients (campaign_id, bot, status);
+
+CREATE TABLE IF NOT EXISTS membership_cache (
+    chat        TEXT NOT NULL,
+    user_id     INTEGER NOT NULL,
+    status      TEXT NOT NULL,                  -- статус из Telegram или 'unknown'
+    checked_at  TEXT NOT NULL,
+    PRIMARY KEY (chat, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS blocked_users (
+    bot         TEXT NOT NULL,
+    user_id     INTEGER NOT NULL,
+    blocked_at  TEXT NOT NULL,
+    PRIMARY KEY (bot, user_id)
+);
+"""
+
+_conn: Optional[sqlite3.Connection] = None
+_lock = threading.Lock()
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def get_conn() -> sqlite3.Connection:
+    global _conn
+    if _conn is None:
+        _conn = sqlite3.connect(
+            settings.broadcast_db_path, check_same_thread=False, timeout=30
+        )
+        _conn.row_factory = sqlite3.Row
+        _conn.execute("PRAGMA journal_mode=WAL")
+        _conn.execute("PRAGMA synchronous=NORMAL")
+        _conn.execute("PRAGMA foreign_keys=ON")
+    return _conn
+
+
+def init_db() -> None:
+    with _lock:
+        get_conn().executescript(_SCHEMA)
+        get_conn().commit()
+
+
+def close_db() -> None:
+    global _conn
+    if _conn is not None:
+        _conn.close()
+        _conn = None
+
+
+# ---------------------------------------------------------------- campaigns
+
+def create_campaign(title: str, message_text: str, parse_mode: str, bots: str) -> int:
+    with _lock:
+        cur = get_conn().execute(
+            "INSERT INTO campaigns (title, message_text, parse_mode, bots, status, created_at)"
+            " VALUES (?, ?, ?, ?, 'draft', ?)",
+            (title, message_text, parse_mode, bots, _now()),
+        )
+        get_conn().commit()
+        return cur.lastrowid
+
+
+def get_campaign(campaign_id: int) -> Optional[sqlite3.Row]:
+    return get_conn().execute(
+        "SELECT * FROM campaigns WHERE id = ?", (campaign_id,)
+    ).fetchone()
+
+
+def list_campaigns() -> list[sqlite3.Row]:
+    return get_conn().execute(
+        "SELECT * FROM campaigns ORDER BY id DESC"
+    ).fetchall()
+
+
+def transition_campaign(campaign_id: int, from_statuses: Iterable[str], to_status: str) -> bool:
+    """Атомарный переход статуса; False, если кампания не в ожидаемом статусе.
+
+    Ключевая защита от двойного запуска: rowcount == 1 только у одного гонщика.
+    """
+    placeholders = ",".join("?" for _ in from_statuses)
+    ts_field = {
+        "dry_running": "dry_run_at",
+        "running": "started_at",
+        "done": "finished_at",
+        "failed": "finished_at",
+        "cancelled": "finished_at",
+    }.get(to_status)
+    ts_sql = f", {ts_field} = ?" if ts_field else ""
+    params: list[Any] = [to_status] + ([_now()] if ts_field else []) + [campaign_id, *from_statuses]
+    with _lock:
+        cur = get_conn().execute(
+            f"UPDATE campaigns SET status = ?{ts_sql} WHERE id = ? AND status IN ({placeholders})",
+            params,
+        )
+        get_conn().commit()
+        return cur.rowcount == 1
+
+
+def set_campaign_totals(campaign_id: int, totals: dict) -> None:
+    with _lock:
+        get_conn().execute(
+            "UPDATE campaigns SET totals_json = ? WHERE id = ?",
+            (json.dumps(totals, ensure_ascii=False), campaign_id),
+        )
+        get_conn().commit()
+
+
+def update_campaign_text(campaign_id: int, title: str, message_text: str,
+                         parse_mode: str, bots: str) -> bool:
+    """Правка кампании возможна только в draft/ready; после правки dry-run
+    устаревает, поэтому статус сбрасывается в draft и снапшот чистится."""
+    with _lock:
+        cur = get_conn().execute(
+            "UPDATE campaigns SET title=?, message_text=?, parse_mode=?, bots=?,"
+            " status='draft', totals_json=NULL, dry_run_at=NULL"
+            " WHERE id=? AND status IN ('draft','ready')",
+            (title, message_text, parse_mode, bots, campaign_id),
+        )
+        if cur.rowcount == 1:
+            get_conn().execute("DELETE FROM recipients WHERE campaign_id=?", (campaign_id,))
+        get_conn().commit()
+        return cur.rowcount == 1
+
+
+def campaigns_in_status(statuses: Iterable[str]) -> list[sqlite3.Row]:
+    placeholders = ",".join("?" for _ in statuses)
+    return get_conn().execute(
+        f"SELECT * FROM campaigns WHERE status IN ({placeholders}) ORDER BY id",
+        list(statuses),
+    ).fetchall()
+
+
+# --------------------------------------------------------------- recipients
+
+def clear_recipients(campaign_id: int) -> None:
+    with _lock:
+        get_conn().execute("DELETE FROM recipients WHERE campaign_id=?", (campaign_id,))
+        get_conn().commit()
+
+
+def add_recipients(campaign_id: int, bot: str,
+                   users: Iterable[tuple[int, Optional[str], Optional[str]]]) -> None:
+    """users: (user_id, username, user_name). Дубли молча игнорируются."""
+    with _lock:
+        get_conn().executemany(
+            "INSERT OR IGNORE INTO recipients (campaign_id, bot, user_id, username, user_name)"
+            " VALUES (?, ?, ?, ?, ?)",
+            [(campaign_id, bot, uid, un, name) for uid, un, name in users],
+        )
+        get_conn().commit()
+
+
+def mark_recipient(campaign_id: int, bot: str, user_id: int,
+                   status: str, detail: Optional[str] = None) -> None:
+    sent_at = _now() if status == "sent" else None
+    with _lock:
+        get_conn().execute(
+            "UPDATE recipients SET status=?, detail=?, sent_at=COALESCE(?, sent_at)"
+            " WHERE campaign_id=? AND bot=? AND user_id=?",
+            (status, detail, sent_at, campaign_id, bot, user_id),
+        )
+        get_conn().commit()
+
+
+def mark_recipients_bulk(campaign_id: int, bot: str, user_ids: Iterable[int],
+                         status: str, detail: Optional[str] = None) -> None:
+    with _lock:
+        get_conn().executemany(
+            "UPDATE recipients SET status=?, detail=? WHERE campaign_id=? AND bot=? AND user_id=?",
+            [(status, detail, campaign_id, bot, uid) for uid in user_ids],
+        )
+        get_conn().commit()
+
+
+def pending_recipients(campaign_id: int, bot: str, limit: int = 200) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        "SELECT * FROM recipients WHERE campaign_id=? AND bot=? AND status='pending'"
+        " ORDER BY user_id LIMIT ?",
+        (campaign_id, bot, limit),
+    ).fetchall()
+
+
+def claim_next_recipient(campaign_id: int, bot: str) -> Optional[sqlite3.Row]:
+    """Двухфазная отправка: атомарно захватывает следующего pending-получателя,
+    переводя его в 'sending'. Гарантирует, что даже при случайном втором
+    воркере один юзер не будет взят дважды."""
+    with _lock:
+        row = get_conn().execute(
+            "UPDATE recipients SET status='sending' WHERE rowid = ("
+            "  SELECT rowid FROM recipients"
+            "  WHERE campaign_id=? AND bot=? AND status='pending'"
+            "  ORDER BY user_id LIMIT 1)"
+            " RETURNING user_id, username, user_name",
+            (campaign_id, bot),
+        ).fetchone()
+        get_conn().commit()
+        return row
+
+
+def reconcile_sending(campaign_id: int) -> int:
+    """Восстановление после падения: зависшие 'sending' считаем доставленными
+    (at-most-once — для маркетинговой рассылки дубль хуже одного пропуска)."""
+    with _lock:
+        cur = get_conn().execute(
+            "UPDATE recipients SET status='sent', sent_at=?,"
+            " detail='resume: статус неоднозначен, считаем доставленным'"
+            " WHERE campaign_id=? AND status='sending'",
+            (_now(), campaign_id),
+        )
+        get_conn().commit()
+        return cur.rowcount
+
+
+def recipients_in_status(campaign_id: int, statuses: Iterable[str]) -> list[sqlite3.Row]:
+    placeholders = ",".join("?" for _ in statuses)
+    return get_conn().execute(
+        f"SELECT * FROM recipients WHERE campaign_id=? AND status IN ({placeholders})",
+        [campaign_id, *statuses],
+    ).fetchall()
+
+
+def campaign_counters(campaign_id: int) -> dict[str, dict[str, int]]:
+    """{bot: {status: count}} — для дашборда и HTMX-поллинга (один запрос)."""
+    rows = get_conn().execute(
+        "SELECT bot, status, COUNT(*) AS n FROM recipients"
+        " WHERE campaign_id=? GROUP BY bot, status",
+        (campaign_id,),
+    ).fetchall()
+    out: dict[str, dict[str, int]] = {}
+    for r in rows:
+        out.setdefault(r["bot"], {})[r["status"]] = r["n"]
+    return out
+
+
+def all_recipients(campaign_id: int) -> list[sqlite3.Row]:
+    return get_conn().execute(
+        "SELECT * FROM recipients WHERE campaign_id=? ORDER BY bot, user_id",
+        (campaign_id,),
+    ).fetchall()
+
+
+# --------------------------------------------------------- membership cache
+
+def membership_get(chat: str, user_id: int) -> Optional[tuple[str, float]]:
+    """(status, возраст записи в часах) или None. TTL применяет вызывающий:
+    он асимметричный — 'member' можно кэшировать долго (протухание = лишний
+    пропуск, безвредно), 'left'/'kicked' коротко (протухание = письмо тому,
+    кто уже вступил в чат)."""
+    row = get_conn().execute(
+        "SELECT status, checked_at FROM membership_cache WHERE chat=? AND user_id=?",
+        (chat, user_id),
+    ).fetchone()
+    if row is None:
+        return None
+    checked = datetime.strptime(row["checked_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    age_hours = (datetime.now(timezone.utc) - checked).total_seconds() / 3600
+    return row["status"], age_hours
+
+
+def membership_put(chat: str, user_id: int, status: str) -> None:
+    with _lock:
+        get_conn().execute(
+            "INSERT INTO membership_cache (chat, user_id, status, checked_at)"
+            " VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(chat, user_id) DO UPDATE SET status=excluded.status,"
+            " checked_at=excluded.checked_at",
+            (chat, user_id, status, _now()),
+        )
+        get_conn().commit()
+
+
+# ------------------------------------------------------------ blocked users
+
+def blocked_set(bot: str) -> set[int]:
+    rows = get_conn().execute(
+        "SELECT user_id FROM blocked_users WHERE bot=?", (bot,)
+    ).fetchall()
+    return {r["user_id"] for r in rows}
+
+
+def add_blocked(bot: str, user_id: int) -> None:
+    with _lock:
+        get_conn().execute(
+            "INSERT OR IGNORE INTO blocked_users (bot, user_id, blocked_at) VALUES (?, ?, ?)",
+            (bot, user_id, _now()),
+        )
+        get_conn().commit()
+
+
+# --------------------------------------------------------------- dashboard
+
+def dashboard_stats() -> dict[str, dict[str, int]]:
+    """Сводка по blocked_users для дашборда; остальное считает sources.py."""
+    rows = get_conn().execute(
+        "SELECT bot, COUNT(*) AS n FROM blocked_users GROUP BY bot"
+    ).fetchall()
+    return {r["bot"]: {"blocked": r["n"]} for r in rows}

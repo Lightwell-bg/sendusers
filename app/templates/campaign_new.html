@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{% if campaign %}Редактирование кампании{% else %}Новая кампания{% endif %} — Админка рассылок{% endblock %}
+{% block content %}
+  <h1>{% if campaign %}Редактирование кампании #{{ campaign.id }}{% else %}Новая кампания{% endif %}</h1>
+
+  <form method="post" action="{{ action }}" class="form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+
+    <label for="title">Название кампании</label>
+    <input type="text" id="title" name="title" required
+           value="{{ campaign.title if campaign else '' }}">
+
+    <label for="message_text">Текст сообщения</label>
+    <textarea id="message_text" name="message_text" rows="10" required>{{ campaign.message_text if campaign else '' }}</textarea>
+
+    <label for="parse_mode">Разметка</label>
+    <select id="parse_mode" name="parse_mode">
+      {% set current_pm = campaign.parse_mode if campaign else 'HTML' %}
+      <option value="HTML" {% if current_pm == 'HTML' %}selected{% endif %}>HTML</option>
+      <option value="MarkdownV2" {% if current_pm == 'MarkdownV2' %}selected{% endif %}>MarkdownV2</option>
+      <option value="" {% if current_pm == '' %}selected{% endif %}>без разметки</option>
+    </select>
+
+    <fieldset>
+      <legend>Боты для рассылки</legend>
+      {% set current_bots = campaign.bots if campaign else '' %}
+      <label class="checkbox-label">
+        <input type="checkbox" name="bots" value="A" {% if 'A' in current_bots %}checked{% endif %}>
+        {{ bot_labels.get('A', 'Бот A') }}
+      </label>
+      <label class="checkbox-label">
+        <input type="checkbox" name="bots" value="B" {% if 'B' in current_bots %}checked{% endif %}>
+        {{ bot_labels.get('B', 'Бот B') }}
+      </label>
+      <p class="hint">Нужно выбрать хотя бы одного бота.</p>
+    </fieldset>
+
+    <button type="submit">{% if campaign %}Сохранить{% else %}Создать кампанию{% endif %}</button>
+    {% if campaign %}
+      <a href="/campaigns/{{ campaign.id }}" class="button-secondary">Отмена</a>
+    {% endif %}
+  </form>
+{% endblock %}

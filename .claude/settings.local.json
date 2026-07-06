@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c ' *)",
+      "Bash(py -0)",
+      "Bash(py --version)",
+      "Bash(py -m venv .venv)",
+      "Bash(./.venv/Scripts/python.exe -m pip install --upgrade pip -q)",
+      "Bash(./.venv/Scripts/python.exe -m pip install -r requirements.txt -q)",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/ -x -q)",
+      "Bash(./.venv/Scripts/python.exe \"C:/Users/Vlad/AppData/Local/Temp/claude/d--1PythonProjects-20260706SendUser-sendusers/85b74d42-fed0-4fb7-9fb6-0e0595f15b09/scratchpad/smoke_test.py\")",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/ -q)",
+      "PowerShell(.venv\\\\Scripts\\\\python.exe -m pytest tests/ -q 2>&1)",
+      "Bash(node \"C:/Users/Vlad/.claude/plugins/cache/openai-codex/codex/1.0.5/scripts/codex-companion.mjs\" result task-mr93grgy-844ui2)",
+      "Read(//opt/bginfobot/**)",
+      "Read(//opt/**)"
+    ]
+  }
+}

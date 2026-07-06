@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Дашборд — Админка рассылок{% endblock %}
+{% block content %}
+  <h1>Дашборд</h1>
+
+  <section class="cards">
+    {% for bot, stat in source_stats.items() %}
+      <div class="card">
+        <h2>Бот {{ bot }} <span class="muted">{{ stat.label }}</span></h2>
+        {% if stat.error %}
+          <p class="error">Ошибка чтения базы: {{ stat.error }}</p>
+        {% else %}
+          <p>Всего записей: <b>{{ stat.total }}</b></p>
+          <p>Уникальных пользователей: <b>{{ stat.unique }}</b></p>
+        {% endif %}
+        <p>Заблокировали бота: <b>{{ blocked_stats.get(bot, {}).get('blocked', 0) }}</b></p>
+      </div>
+    {% endfor %}
+  </section>
+
+  <h2>Последние кампании</h2>
+  {% if recent_campaigns %}
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Название</th>
+          <th>Боты</th>
+          <th>Статус</th>
+          <th>Создана</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in recent_campaigns %}
+          <tr>
+            <td><a href="/campaigns/{{ c.id }}">{{ c.id }}</a></td>
+            <td>{{ c.title }}</td>
+            <td>{{ c.bots }}</td>
+            <td><span class="badge {{ status_class(c.status) }}">{{ status_label(c.status) }}</span></td>
+            <td>{{ c.created_at }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">Кампаний пока нет. <a href="/campaigns/new">Создать первую</a>.</p>
+  {% endif %}
+{% endblock %}

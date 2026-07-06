@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Кампания #{{ campaign.id }} — Админка рассылок{% endblock %}
+{% block content %}
+  <h1>{{ campaign.title }}</h1>
+  <p class="muted">Боты: {{ campaign.bots }} · Разметка: {{ campaign.parse_mode or 'без разметки' }} · Создана: {{ campaign.created_at }}</p>
+
+  <h2>Текст сообщения</h2>
+  <pre class="message-preview">{{ campaign.message_text }}</pre>
+
+  <h2>Статус и счётчики</h2>
+  {% include "_status.html" %}
+
+  {% if totals %}
+    <h3>Итоги</h3>
+    <ul>
+      {% for k, v in totals.items() %}
+        <li>{{ k }}: {{ v }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  <h2>Действия</h2>
+  <div class="actions">
+    {% if campaign.status == 'draft' %}
+      <form method="post" action="/campaigns/{{ campaign.id }}/dry_run" class="inline-form">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit">Dry-run</button>
+      </form>
+      <form method="post" action="/campaigns/{{ campaign.id }}/test" class="inline-form">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit">Тест себе</button>
+      </form>
+      <a class="button-secondary" href="/campaigns/{{ campaign.id }}/edit">Редактировать</a>
+
+    {% elif campaign.status == 'dry_running' %}
+      <form method="post" action="/campaigns/{{ campaign.id }}/cancel" class="inline-form">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit">Отмена</button>
+      </form>
+      <p class="muted">Идёт тестовый прогон, страница обновляется автоматически…</p>
+
+    {% elif campaign.status == 'ready' %}
+      <form method="post" action="/campaigns/{{ campaign.id }}/send" class="inline-form">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit">Подтвердить отправку</button>
+      </form>
+      <form method="post" action="/campaigns/{{ campaign.id }}/dry_run" class="inline-form">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit">Dry-run заново</button>
+      </form>
+      <form method="post" action="/campaigns/{{ campaign.id }}/test" class="inline-form">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit">Тест себе</button>
+      </form>
+      <a class="button-secondary" href="/campaigns/{{ campaign.id }}/edit">Редактировать</a>
+
+    {% elif campaign.status == 'running' %}
+      <form method="post" action="/campaigns/{{ campaign.id }}/pause" class="inline-form">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit">Пауза</button>
+      </form>
+      <form method="post" action="/campaigns/{{ campaign.id }}/cancel" class="inline-form">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit">Отмена</button>
+      </form>
+      <p class="muted">Идёт отправка, страница обновляется автоматически…</p>
+
+    {% elif campaign.status == 'paused' %}
+      <form method="post" action="/campaigns/{{ campaign.id }}/send" class="inline-form">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit">Продолжить</button>
+      </form>
+      <form method="post" action="/campaigns/{{ campaign.id }}/cancel" class="inline-form">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit">Отмена</button>
+      </form>
+
+    {% else %}
+      <a class="button-secondary" href="/campaigns/{{ campaign.id }}/export.csv">Экспорт CSV</a>
+    {% endif %}
+  </div>
+{% endblock %}
