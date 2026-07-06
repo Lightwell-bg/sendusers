@@ -66,7 +66,7 @@ RECIPIENT_STATUS_LABELS = {
     "pending": "В очереди",
     "sending": "Отправляется",
     "sent": "Отправлено",
-    "skipped_member": "Пропущен (не участник)",
+    "skipped_member": "Пропущен (участник исключённого чата)",
     "blocked": "Заблокировал бота",
     "error": "Ошибка",
 }

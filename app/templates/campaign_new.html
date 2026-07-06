@@ -11,6 +11,16 @@
            value="{{ campaign.title if campaign else '' }}">
 
     <label for="message_text">Текст сообщения</label>
+    <div class="editor-toolbar" id="editor-toolbar" aria-label="Форматирование">
+      <button type="button" data-tag="b" title="Жирный"><b>Ж</b></button>
+      <button type="button" data-tag="i" title="Курсив"><i>К</i></button>
+      <button type="button" data-tag="u" title="Подчёркнутый"><u>П</u></button>
+      <button type="button" data-tag="s" title="Зачёркнутый"><s>З</s></button>
+      <button type="button" data-link title="Ссылка">🔗&nbsp;ссылка</button>
+      <button type="button" data-tag="code" title="Моноширинный">&lt;/&gt;&nbsp;код</button>
+      <button type="button" data-tag="tg-spoiler" title="Спойлер">спойлер</button>
+    </div>
+    <p class="hint" id="editor-hint">Выделите текст и нажмите кнопку — она обернёт его в HTML-тег Telegram.</p>
     <textarea id="message_text" name="message_text" rows="10" required>{{ campaign.message_text if campaign else '' }}</textarea>
 
     <label for="parse_mode">Разметка</label>
@@ -40,4 +50,8 @@
       <a href="/campaigns/{{ campaign.id }}" class="button-secondary">Отмена</a>
     {% endif %}
   </form>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/editor.js"></script>
 {% endblock %}

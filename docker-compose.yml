@@ -15,12 +15,15 @@
 #    сначала добавьте бинд-маунт в docker-compose бота B и пересоздайте его контейнер.
 # 3. Сервис должен работать строго в ОДИН процесс (никаких uvicorn --workers > 1):
 #    защита от двойного запуска кампании держится на in-process реестре задач.
+# 4. HOST_PORT — порт НА ХОСТЕ (внутри контейнера всегда 8080, см. Dockerfile).
+#    На этом VPS уже заняты: 8080 (medvopros-app), 8081 (vetvopros-app),
+#    5000 (bginfoai) — выбирайте свободный порт (по умолчанию 8090).
 services:
   broadcast-admin:
     build: .
     env_file: .env
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${HOST_PORT:-8090}:8080"
     volumes:
       - ./data:/app/data
       - ${BOT_A_DATA_DIR:-../bginfobot/data}:/dbs/bot_a:ro

@@ -13,7 +13,11 @@
       "PowerShell(.venv\\\\Scripts\\\\python.exe -m pytest tests/ -q 2>&1)",
       "Bash(node \"C:/Users/Vlad/.claude/plugins/cache/openai-codex/codex/1.0.5/scripts/codex-companion.mjs\" result task-mr93grgy-844ui2)",
       "Read(//opt/bginfobot/**)",
-      "Read(//opt/**)"
+      "Read(//opt/**)",
+      "Bash(cd \"d:/1PythonProjects/20260706SendUser/sendusers\" && rm -f data/broadcast_smoke.db* && echo cleaned)"
+    ],
+    "additionalDirectories": [
+      "D:\\1PythonProjects\\20260706SendUser\\sendusers\\data"
     ]
   }
 }

@@ -148,6 +148,27 @@ button, .button-secondary {
 }
 .inline-form { display: inline-block; margin: 0 8px 8px 0; }
 
+.editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.editor-toolbar button {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  border-radius: 6px;
+  padding: 4px 10px;
+  margin: 0;
+  font-size: 13px;
+  min-width: 32px;
+  line-height: 1.4;
+}
+.editor-toolbar button:hover:not(:disabled) { border-color: var(--accent); }
+.editor-toolbar.disabled { opacity: 0.4; }
+.editor-toolbar button:disabled { cursor: not-allowed; }
+
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
 .login-page {
