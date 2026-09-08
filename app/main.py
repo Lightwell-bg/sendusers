@@ -16,6 +16,7 @@ import io
 import json
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -126,6 +127,29 @@ def render(request: Request, name: str, **ctx):
 def parse_bots(bots: list[str]) -> str:
     order = [b for b in ("A", "B") if b in bots]
     return ",".join(order)
+
+
+# --- планирование отправки ---
+
+# Формат, в котором время лежит в БД (db._now()). Сравнение scheduled_at с
+# текущим временем везде строковое, поэтому формат обязан совпадать
+# посимвольно — иначе сравнение молча даёт неверный результат.
+SCHEDULED_AT_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def parse_scheduled_at(value: str) -> datetime | None:
+    """Строгий разбор времени отправки (UTC); None — не разобралось.
+
+    Без строгой проверки в scheduled_at попадает всё, что прислал браузер:
+    например, при сбое schedule.js `new Date("")` даёт Invalid Date и строку
+    "NaN-NaN-NaN NaN:NaN:00". Она непустая, поэтому проходила бы дальше, а
+    при строковом сравнении оказывается больше любого реального времени —
+    кампания навсегда зависает в 'scheduled' без единой ошибки в интерфейсе.
+    """
+    try:
+        return datetime.strptime(value, SCHEDULED_AT_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 
 # --- работа с картинками кампаний ---
@@ -282,11 +306,19 @@ async def history(request: Request, page: int = 1):
 
 @app.get("/queue", dependencies=[Depends(require_auth)])
 async def queue(request: Request):
+    from . import worker
+
+    # process_start нужен шаблону, чтобы отличить две противоположные
+    # ситуации: кампания просрочена, но ждёт освобождения очереди (норма,
+    # уйдёт сама) и кампания просрочена ещё до старта процесса (сама уже
+    # не уйдёт, нужны руки администратора) — см. worker._queue_tick.
     return render(
         request,
         "queue.html",
         campaigns=db.scheduled_campaigns(),
+        running=db.campaigns_in_status(("running",)),
         now=db.now(),
+        process_start=worker._process_start_time,
         csrf=csrf_token(request),
     )
 
@@ -457,9 +489,25 @@ async def campaign_schedule(request: Request, campaign_id: int,
     verify_csrf(request, csrf)
     from . import worker
 
-    if not scheduled_at.strip():
+    value = scheduled_at.strip()
+    if not value:
         return redirect(f"/campaigns/{campaign_id}", "Укажите время отправки")
-    ok = await worker.schedule_campaign(campaign_id, scheduled_at)
+    when = parse_scheduled_at(value)
+    if when is None:
+        return redirect(
+            f"/campaigns/{campaign_id}",
+            "Некорректное время отправки — ожидается формат ГГГГ-ММ-ДД ЧЧ:ММ:СС (UTC)",
+        )
+    if when <= datetime.now(timezone.utc):
+        return redirect(
+            f"/campaigns/{campaign_id}",
+            "Время отправки должно быть в будущем — для немедленной отправки "
+            "используйте кнопку «Подтвердить отправку»/«Отправить сейчас»",
+        )
+    # В БД кладём канонический вид, а не то, что прислали: strptime терпит
+    # неполные нули ("2099-1-1 0:0:0"), и такая строка при строковом сравнении
+    # оказывается больше нормальной — кампания не ушла бы в срок.
+    ok = await worker.schedule_campaign(campaign_id, when.strftime(SCHEDULED_AT_FORMAT))
     msg = None if ok else "недопустимый статус"
     return redirect(f"/campaigns/{campaign_id}", msg)
 

@@ -3,6 +3,19 @@
 {% block content %}
   <h1>Очередь отправки</h1>
 
+  {% if running %}
+    <div class="card">
+      <h2>Сейчас отправляется</h2>
+      {% for c in running %}
+        <p>
+          <a href="/campaigns/{{ c.id }}">{{ c.title }}</a>
+          <span class="muted">— боты: {{ c.bots }}</span>
+        </p>
+      {% endfor %}
+      <p class="muted">Пока идёт эта отправка, запланированные кампании ждут своей очереди.</p>
+    </div>
+  {% endif %}
+
   {% if campaigns %}
     <table class="data-table">
       <thead>
@@ -21,8 +34,14 @@
             <td><a href="/campaigns/{{ c.id }}">{{ c.title }}</a></td>
             <td>{{ c.bots }}</td>
             <td>
-              {% if c.scheduled_at < now %}
-                <span class="badge badge-red">Просрочено</span>
+              {#- Просроченность значит две противоположные вещи. Время раньше
+                  старта процесса — очередь такую кампанию уже не подхватит
+                  (см. worker._queue_tick), нужны руки админа. Время просто в
+                  прошлом — кампания здорова и ждёт, пока освободится очередь. -#}
+              {% if process_start and c.scheduled_at and c.scheduled_at < process_start %}
+                <span class="badge badge-red">Просрочено — не отправится сама</span>
+              {% elif c.scheduled_at and c.scheduled_at < now %}
+                <span class="badge badge-orange">Ждёт освобождения очереди</span>
               {% endif %}
             </td>
             <td>

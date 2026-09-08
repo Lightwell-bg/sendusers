@@ -20,11 +20,13 @@ def clean_worker_state():
     worker._tasks.clear()
     worker._control.clear()
     worker._notes.clear()
+    worker._orphan_warned.clear()
     worker._process_start_time = ""
     yield
     worker._tasks.clear()
     worker._control.clear()
     worker._notes.clear()
+    worker._orphan_warned.clear()
     worker._process_start_time = ""
 
 
@@ -374,6 +376,39 @@ async def test_queue_serializes_two_scheduled_campaigns(monkeypatch):
     await worker._queue_tick()  # очередь свободна -> стартует cid2
     await wait_campaign_task(cid2)
     assert db.get_campaign(cid2)["status"] == "done"
+
+
+async def test_concurrent_queue_ticks_start_at_most_one(monkeypatch):
+    """Сериализация держится не на порядке вызовов, а на отсутствии await
+    между проверкой занятости очереди и атомарным переходом в 'running'
+    (см. комментарий-инвариант в worker._queue_tick). Одновременные тики
+    против двух готовых кампаний не должны запустить две отправки.
+
+    В отличие от test_queue_serializes_two_scheduled_campaigns этот тест
+    проверяет сам механизм: если кто-то добавит await в этот участок, тики
+    начнут перекрываться и второй увидит очередь свободной."""
+    release = asyncio.Event()
+
+    async def gated_send(token, chat_id, text, parse_mode=""):
+        await release.wait()
+
+    cid1 = await prepared_campaign(monkeypatch, bots="A")
+    cid2 = await prepared_campaign(monkeypatch, bots="A")
+    monkeypatch.setattr(worker.telegram, "send_message", gated_send)
+
+    assert await worker.send_now(cid1)
+    assert await worker.send_now(cid2)
+
+    await asyncio.gather(*(worker._queue_tick() for _ in range(5)))
+
+    running = [c["id"] for c in db.campaigns_in_status(("running",))]
+    assert running == [cid1], f"параллельные тики запустили лишние отправки: {running}"
+    assert db.get_campaign(cid2)["status"] == "scheduled"
+
+    # не оставляем висящую задачу: снимаем кампанию и отпускаем отправку
+    assert await worker.cancel_campaign(cid1)
+    release.set()
+    await wait_campaign_task(cid1)
 
 
 async def test_scheduled_before_boot_not_auto_started(monkeypatch):

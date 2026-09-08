@@ -40,6 +40,9 @@ _notes: dict[int, str] = {}
 # Момент старта текущего процесса — кампании, просроченные до этого момента
 # (сервис был выключен), очередь не подхватывает автоматически, см. _queue_tick.
 _process_start_time: str = ""
+# id кампаний, о «зависшем running» которых уже предупредили: тик идёт раз в
+# queue_tick_seconds, без этого одно и то же предупреждение забило бы логи.
+_orphan_warned: set[int] = set()
 
 
 def _task_alive(campaign_id: int) -> bool:
@@ -336,12 +339,41 @@ async def _queue_tick() -> None:
     раннюю готовую кампанию из 'scheduled' и стартует. Кампании,
     просроченные ещё до старта этого процесса, не трогает (см.
     _process_start_time и db.next_due_scheduled_campaign)."""
-    if db.campaigns_in_status(("running",)):
+    # ИНВАРИАНТ (главная гарантия всей очереди): между проверкой занятости
+    # ниже и атомарным переходом в 'running' внутри start_send не должно
+    # быть НИ ОДНОГО await. Именно это окно без точек приостановки не даёт
+    # двум тикам (или тику и обработчику роута) одновременно увидеть
+    # свободную очередь и запустить две отправки сразу. Любой await,
+    # добавленный здесь или в начале start_send, молча ломает сериализацию —
+    # тесты test_queue_serializes_two_scheduled_campaigns и
+    # test_concurrent_queue_ticks_start_at_most_one держат этот инвариант.
+    running = db.campaigns_in_status(("running",))
+    if running:
+        for campaign in running:
+            cid = campaign["id"]
+            if not _task_alive(cid) and cid not in _orphan_warned:
+                # Задача умерла, а статус остался 'running' — очередь считает
+                # себя занятой навсегда, ни одна запланированная кампания
+                # больше не стартует. Разблокировать может только админ.
+                _orphan_warned.add(cid)
+                logger.warning(
+                    "Кампания %s (%s) в статусе 'running', но её задача не жива —"
+                    " очередь заблокирована и ничего не отправится. Отмените"
+                    " кампанию вручную на /campaigns/%s, чтобы разблокировать очередь",
+                    cid, campaign["title"], cid,
+                )
         return
+    _orphan_warned.clear()
     row = db.next_due_scheduled_campaign(db.now(), _process_start_time)
     if row is None:
         return
-    await start_send(row["id"])
+    if not await start_send(row["id"]):
+        # Не должно случаться: очередь свободна, кампания в 'scheduled'.
+        # Но молчать нельзя — иначе такой сбой не видно вообще нигде.
+        logger.warning(
+            "Кампания %s подошла по времени, но запустить её не удалось"
+            " (статус изменился или задача уже жива)", row["id"],
+        )
 
 
 async def _queue_processor() -> None:
@@ -445,6 +477,19 @@ async def resume_on_startup() -> None:
     фоновая очередь не подхватывает автоматически (см. _queue_tick)."""
     global _process_start_time
     _process_start_time = db.now()
+    _orphan_warned.clear()
+    # Просроченной на момент старта может стать не только кампания, ждавшая
+    # выключенный сервис, но и совершенно здоровая — та, что стояла в очереди
+    # за другой отправкой, когда админ выкатил обновление. Автоматически её
+    # уже не подхватят, поэтому громко называем такие кампании поимённо.
+    stranded = [c for c in db.campaigns_in_status(("scheduled",))
+                if c["scheduled_at"] and c["scheduled_at"] < _process_start_time]
+    if stranded:
+        logger.warning(
+            "После рестарта просрочены и НЕ будут отправлены автоматически: %s."
+            " Откройте /queue и отправьте вручную либо перепланируйте",
+            "; ".join(f"#{c['id']} «{c['title']}» на {c['scheduled_at']}" for c in stranded),
+        )
     for campaign in db.campaigns_in_status(("running",)):
         cid = campaign["id"]
         n = db.reconcile_sending(cid)

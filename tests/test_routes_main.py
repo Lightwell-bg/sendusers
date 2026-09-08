@@ -159,6 +159,55 @@ def test_schedule_and_queue_page(monkeypatch):
         assert "2099-01-01" in page.text
 
 
+def test_schedule_rejects_bad_and_past_time(monkeypatch):
+    """Мусор от браузера и время в прошлом не должны попадать в scheduled_at:
+    мусор ('NaN-NaN-NaN NaN:NaN:00' от сломавшегося schedule.js) при строковом
+    сравнении больше любого реального времени и кампания зависла бы в
+    'scheduled' навсегда, а прошедшее время либо не сработает, либо уйдёт
+    мгновенно — и то и другое молча, с одинаковым «успешным» редиректом."""
+    async def all_left(token, chat, user_id):
+        return "left"
+
+    monkeypatch.setattr(worker.telegram, "get_chat_member_status", all_left)
+
+    with TestClient(app) as c:
+        _login(c)
+        csrf = _csrf(c)
+        r = c.post(
+            "/campaigns",
+            data={"title": "валидация", "message_text": "x", "parse_mode": "",
+                  "bots": "A", "csrf": csrf},
+            follow_redirects=False,
+        )
+        cid = int(r.headers["location"].rstrip("/").split("/")[-1])
+
+        csrf = _csrf(c, f"/campaigns/{cid}")
+        c.post(f"/campaigns/{cid}/dry_run", data={"csrf": csrf}, follow_redirects=False)
+        _wait_until_not_polling(c, cid)
+
+        for bad in ("NaN-NaN-NaN NaN:NaN:00", "завтра", "2099-01-01T00:00:00",
+                    "2000-01-01 00:00:00"):
+            csrf = _csrf(c, f"/campaigns/{cid}")
+            r = c.post(
+                f"/campaigns/{cid}/schedule",
+                data={"csrf": csrf, "scheduled_at": bad},
+                follow_redirects=False,
+            )
+            assert r.status_code == 303
+            assert "msg=" in r.headers["location"], f"{bad!r} принято молча"
+            # статус не изменился — кампания осталась готовой, а не 'scheduled'
+            assert c.get(f"/campaigns/{cid}").text.count("Готова к отправке") > 0
+
+        # неполные нули strptime принимает, но в БД должен лечь канонический вид
+        csrf = _csrf(c, f"/campaigns/{cid}")
+        c.post(
+            f"/campaigns/{cid}/schedule",
+            data={"csrf": csrf, "scheduled_at": "2099-1-2 3:4:5"},
+            follow_redirects=False,
+        )
+        assert "2099-01-02 03:04:05" in c.get("/queue").text
+
+
 def test_unschedule_returns_to_ready(monkeypatch):
     async def all_left(token, chat, user_id):
         return "left"
