@@ -319,6 +319,8 @@ EOF
 **Files:**
 - Modify: `app/config.py`
 - Modify: `app/worker.py`
+- Modify: `app/main.py` (одна строка в роуте `/send` — см. Step 16; остальные
+  правки main.py, шаблоны и новые роуты — в Task 3)
 - Modify: `tests/conftest.py`
 - Modify: `tests/test_worker.py`
 - Modify: `.env`, `.env.example`, `README.md` (документируем новую переменную `QUEUE_TICK_SECONDS`)
@@ -725,20 +727,44 @@ async def resume_on_startup() -> None:
         _register(cid, _run_dry_run(cid))
 ```
 
-- [ ] **Step 16: Прогнать тесты воркера**
+- [ ] **Step 16: Переключить роут `/send` на `send_now` (иначе существующий
+  HTTP-тест полного цикла кампании сломается прямо на этой задаче — start_send
+  из Step 12 требует статус 'scheduled', а роут в main.py пока зовёт его
+  напрямую из 'ready')**
+
+В `app/main.py` найти в `campaign_send` (роут `POST /campaigns/{campaign_id}/send`)
+строку:
+
+```python
+    ok = await worker.start_send(campaign_id)
+```
+
+и заменить на:
+
+```python
+    ok = await worker.send_now(campaign_id)
+```
+
+Это тот же файл и роут, который Task 3 будет расширять дальше (формы
+планирования, новые роуты `/schedule`/`/unschedule`/`/queue`) — здесь только
+эта одна строка, чтобы регресс-прогон ниже не падал на уже существующем
+`tests/test_routes_main.py::test_full_campaign_lifecycle_via_http`.
+
+- [ ] **Step 17: Прогнать тесты воркера**
 
 Run: `python -m pytest tests/test_worker.py -v`
 Expected: PASS — все тесты, включая 5 новых из Step 10 и мигрированные из Step 7-8.
 
-- [ ] **Step 17: Прогнать весь набор тестов (регрессия)**
+- [ ] **Step 18: Прогнать весь набор тестов (регрессия)**
 
 Run: `python -m pytest tests/ -q`
-Expected: PASS (80 из Task 1 + 5 новых = 85 passed).
+Expected: PASS (80 из Task 1 + 5 новых = 85 passed). Включая уже существующий
+`test_full_campaign_lifecycle_via_http` — без Step 16 он бы упал здесь.
 
-- [ ] **Step 18: Commit**
+- [ ] **Step 19: Commit**
 
 ```bash
-git add app/config.py app/worker.py tests/conftest.py tests/test_worker.py .env .env.example README.md
+git add app/config.py app/worker.py app/main.py tests/conftest.py tests/test_worker.py .env .env.example README.md
 git commit -m "$(cat <<'EOF'
 worker: фоновая очередь отправки — строго одна кампания одновременно
 
@@ -763,7 +789,8 @@ EOF
 - Consumes (из Task 2): `worker.schedule_campaign()`, `worker.unschedule_campaign()`,
   `worker.send_now()`, `worker.start_queue_processor()`; (из Task 1) `db.scheduled_campaigns()`, `db.now()`.
 - Produces: роуты `POST /campaigns/{id}/schedule`, `POST /campaigns/{id}/unschedule`,
-  `GET /queue`; обновлённый `POST /campaigns/{id}/send` (теперь через `send_now`).
+  `GET /queue`. (`POST /campaigns/{id}/send` уже переключён на `send_now` в Task 2 —
+  здесь не трогать.)
 
 - [ ] **Step 1: Написать падающие HTTP-тесты**
 
@@ -941,15 +968,10 @@ async def lifespan(app: FastAPI):
     db.close_db()
 ```
 
-- [ ] **Step 5: Переключить `/send` на `send_now`**
+(Роут `/send` уже переключён на `worker.send_now` в Task 2, Step 16 — здесь
+трогать его не нужно.)
 
-В `app/main.py` заменить в `campaign_send` (строка 435):
-
-```python
-    ok = await worker.send_now(campaign_id)
-```
-
-- [ ] **Step 6: Новые роуты `/schedule`, `/unschedule`, `/queue`**
+- [ ] **Step 5: Новые роуты `/schedule`, `/unschedule`, `/queue`**
 
 В `app/main.py` вставить после роута `campaign_send` (после строки 437, перед
 `@app.post("/campaigns/{campaign_id}/cancel", ...)`):
@@ -993,7 +1015,7 @@ async def queue(request: Request):
     )
 ```
 
-- [ ] **Step 7: JS-конвертация локального времени в UTC перед отправкой формы**
+- [ ] **Step 6: JS-конвертация локального времени в UTC перед отправкой формы**
 
 Создать `app/static/schedule.js`:
 
@@ -1029,7 +1051,7 @@ async def queue(request: Request):
 })();
 ```
 
-- [ ] **Step 8: Ссылка «Очередь» в навигации**
+- [ ] **Step 7: Ссылка «Очередь» в навигации**
 
 В `app/templates/base.html` заменить строку `<a href="/history">История</a>`:
 
@@ -1038,7 +1060,7 @@ async def queue(request: Request):
         <a href="/queue">Очередь</a>
 ```
 
-- [ ] **Step 9: Карточка кампании — форма планирования и ветка `scheduled`**
+- [ ] **Step 8: Карточка кампании — форма планирования и ветка `scheduled`**
 
 В `app/templates/campaign_detail.html` заменить ветку `{% if campaign.status == 'draft' %}`
 (добавить форму планирования сразу после кнопки «Тест себе», перед ссылкой
@@ -1141,7 +1163,7 @@ async def queue(request: Request):
 {% endblock %}
 ```
 
-- [ ] **Step 10: Создать страницу «Очередь»**
+- [ ] **Step 9: Создать страницу «Очередь»**
 
 Создать `app/templates/queue.html`:
 
@@ -1204,12 +1226,12 @@ async def queue(request: Request):
 {% endblock %}
 ```
 
-- [ ] **Step 11: Прогнать новые тесты**
+- [ ] **Step 10: Прогнать новые тесты**
 
 Run: `python -m pytest tests/test_routes_main.py -v`
 Expected: PASS.
 
-- [ ] **Step 12: Прогнать весь набор тестов (регрессия)**
+- [ ] **Step 11: Прогнать весь набор тестов (регрессия)**
 
 Run: `python -m pytest tests/ -q`
 Expected: PASS (85 из Task 2 + 3 новых = 88 passed). Особо проверить, что
@@ -1217,7 +1239,7 @@ Expected: PASS (85 из Task 2 + 3 новых = 88 passed). Особо пров�
 задействует фоновый обработчик очереди через `QUEUE_TICK_SECONDS=0.05` из
 `tests/conftest.py`).
 
-- [ ] **Step 13: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
 git add app/main.py app/templates/base.html app/templates/campaign_detail.html \
