@@ -29,7 +29,15 @@ def _valid_user_id(user_id: int) -> bool:
 
 
 def _connect_ro(path: str) -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    """mode=ro не защищает от "unable to open database file" на Docker
+    :ro bind-маунте: SQLite даже для чтения пытается создать/проверить
+    служебные файлы блокировки (wal-index и т.п.), а read-only маунт это
+    запрещает на уровне ядра. immutable=1 — официальный флаг SQLite для
+    базы на read-only носителе, отключает эту машинерию целиком. Каждый
+    вызов этого модуля открывает свежее соединение на одну выборку и сразу
+    закрывает (см. fetch_users/source_stats), поэтому не видеть чужие
+    изменения, случившиеся, пока это соединение открыто, не страшно."""
+    return sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
 
 
 def fetch_users(bot: str) -> list[UserRow]:
