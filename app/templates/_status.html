@@ -14,7 +14,7 @@
       {% for bot in ['A', 'B'] %}
         {% if bot in campaign.bots %}
           <tr>
-            <td>{{ bot_labels.get(bot, bot) }}</td>
+            <td>{{ bot_labels().get(bot, bot) }}</td>
             {% for st in recipient_statuses %}
               <td>{{ counters.get(bot, {}).get(st, 0) }}</td>
             {% endfor %}

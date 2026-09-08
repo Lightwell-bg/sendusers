@@ -55,6 +55,8 @@
           <button type="submit">Подтвердить отправку</button>
         </form>
       </div>
+      <p class="hint">Уйдёт всем получателям прямо сейчас. На середине можно
+        поставить на паузу или отменить, но уже отправленное не отозвать.</p>
       <form method="post" action="/campaigns/{{ campaign.id }}/schedule" class="schedule-box" data-schedule-form>
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <input type="hidden" name="scheduled_at" data-utc-datetime>
@@ -82,6 +84,8 @@
           <button type="submit">Отправить сейчас</button>
         </form>
       </div>
+      <p class="hint">«Отправить сейчас» встаёт в общую очередь — если прямо
+        сейчас шлётся другая кампания, эта подождёт своей очереди.</p>
       <form method="post" action="/campaigns/{{ campaign.id }}/schedule" class="schedule-box" data-schedule-form>
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <input type="hidden" name="scheduled_at" data-utc-datetime>
@@ -99,6 +103,7 @@
           <button type="submit" class="button-danger">Отмена</button>
         </form>
       </div>
+      <p class="hint">Отмена — насовсем, возобновить будет нельзя, только создать новую кампанию.</p>
 
     {% elif campaign.status == 'running' %}
       <div class="action-group">
@@ -111,6 +116,8 @@
           <button type="submit" class="button-danger">Отмена</button>
         </form>
       </div>
+      <p class="hint">Пауза останавливает после текущего сообщения, продолжить
+        можно позже. Отмена — насовсем.</p>
       <p class="muted">Идёт отправка, страница обновляется автоматически…</p>
 
     {% elif campaign.status == 'paused' %}
@@ -124,6 +131,8 @@
           <button type="submit" class="button-danger">Отмена</button>
         </form>
       </div>
+      <p class="hint">«Продолжить» встаёт в общую очередь и дошлёт оставшихся
+        получателей. Отмена — насовсем.</p>
 
     {% else %}
       <div class="action-group">

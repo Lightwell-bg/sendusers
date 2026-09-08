@@ -13,6 +13,7 @@ import logging
 import sqlite3
 from typing import Optional
 
+from . import db
 from .config import settings
 
 logger = logging.getLogger(__name__)
@@ -93,7 +94,7 @@ def source_stats() -> dict[str, dict]:
     """
     stats: dict[str, dict] = {}
     for bot in ("A", "B"):
-        label = settings.bot_labels.get(bot, bot)
+        label = db.get_bot_label(bot)
         path = settings.bot_a_db_path if bot == "A" else settings.bot_b_db_path
         entry = {"total": 0, "unique": 0, "label": label, "error": None}
         try:

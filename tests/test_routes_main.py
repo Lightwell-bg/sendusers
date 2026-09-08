@@ -276,3 +276,92 @@ def test_cancel_scheduled_campaign_via_http(monkeypatch):
 
         assert r.status_code == 303
         assert db.get_campaign(cid)["status"] == "cancelled"
+
+
+# --------------------------------------------------------------- настройки
+
+PUBLIC_IP = "8.8.8.8"  # реальный публичный IP: RFC 5737 (203.0.113.0/24 и т.п.)
+# документационные диапазоны Python ipaddress тоже относит к is_private,
+# для теста нужен генуинно внешний адрес
+
+
+def test_external_request_blocked_by_default():
+    with TestClient(app, client=(PUBLIC_IP, 12345)) as c:
+        r = c.get("/login")
+        assert r.status_code == 403
+
+
+def test_health_reachable_even_from_public_ip():
+    with TestClient(app, client=(PUBLIC_IP, 12345)) as c:
+        assert c.get("/health").status_code == 200
+
+
+def test_local_client_never_blocked():
+    # TestClient по умолчанию использует нераспознаваемый host "testclient" —
+    # _is_private_client трактует его как доверенный (в проде ASGI всегда
+    # отдаёт настоящий IP или None, см. app/main.py).
+    with TestClient(app) as c:
+        assert c.get("/login").status_code == 200
+
+
+def test_external_access_enabled_allows_public_ip():
+    with TestClient(app) as c:  # включаем с "доверенного" клиента
+        _login(c)
+        csrf = _csrf(c, "/settings")
+        c.post(
+            "/settings/external-access",
+            data={"csrf": csrf, "enabled": "1"},
+            follow_redirects=False,
+        )
+        assert db.get_external_access() is True
+
+    with TestClient(app, client=(PUBLIC_IP, 12345)) as c:
+        assert c.get("/login").status_code == 200
+
+
+def test_settings_params_saved_and_validated():
+    with TestClient(app) as c:
+        _login(c)
+        csrf = _csrf(c, "/settings")
+        r = c.post(
+            "/settings/params",
+            data={
+                "csrf": csrf,
+                "send_delay": "0.5",
+                "member_check_delay": "0.2",
+                "membership_ttl_hours": "12",
+                "membership_ttl_nonmember_hours": "2",
+                "membership_check_concurrency": "3",
+                "queue_tick_seconds": "10",
+                "exclude_chats": "@one,@two",
+                "admin_chat_id": "12345",
+                "bot_a_label": "Тестбот A",
+                "bot_b_label": "Тестбот B",
+                "log_level": "WARNING",
+            },
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        assert db.get_send_delay() == 0.5
+        assert db.get_exclude_chats() == ("@one", "@two")
+        assert db.get_bot_label("A") == "Тестбот A"
+        assert db.get_log_level() == "WARNING"
+
+        # невалидное число не должно тихо пройти и стереть сохранённое значение
+        csrf = _csrf(c, "/settings")
+        r = c.post(
+            "/settings/params",
+            data={
+                "csrf": csrf,
+                "send_delay": "не число",
+                "member_check_delay": "0.2",
+                "membership_ttl_hours": "12",
+                "membership_ttl_nonmember_hours": "2",
+                "membership_check_concurrency": "3",
+                "queue_tick_seconds": "10",
+            },
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        assert "msg=" in r.headers["location"]
+        assert db.get_send_delay() == 0.5  # прежнее значение не тронуто

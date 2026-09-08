@@ -98,4 +98,5 @@ def clean_broadcast_db():
     conn.execute("DELETE FROM recipients")
     conn.execute("DELETE FROM membership_cache")
     conn.execute("DELETE FROM blocked_users")
+    conn.execute("DELETE FROM app_settings")
     conn.commit()

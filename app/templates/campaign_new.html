@@ -48,13 +48,14 @@
     <fieldset>
       <legend>Боты для рассылки</legend>
       {% set current_bots = campaign.bots if campaign else '' %}
+      {% set labels = bot_labels() %}
       <label class="checkbox-label">
         <input type="checkbox" name="bots" value="A" {% if 'A' in current_bots %}checked{% endif %}>
-        {{ bot_labels.get('A', 'Бот A') }}
+        {{ labels.get('A', 'Бот A') }}
       </label>
       <label class="checkbox-label">
         <input type="checkbox" name="bots" value="B" {% if 'B' in current_bots %}checked{% endif %}>
-        {{ bot_labels.get('B', 'Бот B') }}
+        {{ labels.get('B', 'Бот B') }}
       </label>
       <p class="hint">Нужно выбрать хотя бы одного бота.</p>
     </fieldset>

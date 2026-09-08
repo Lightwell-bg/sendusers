@@ -99,19 +99,19 @@ async def _get_member_status(bot: str, chat: str, user_id: int) -> Optional[str]
 
 async def _is_excluded(bot: str, user_id: int) -> bool:
     """Участник хотя бы одного из exclude-чатов? Short-circuit по первому."""
-    for chat in settings.exclude_chats:
+    for chat in db.get_exclude_chats():
         cached = db.membership_get(chat, user_id)
         status: Optional[str] = None
         if cached is not None:
             cached_status, age_hours = cached
-            ttl = (settings.membership_ttl_hours
+            ttl = (db.get_membership_ttl_hours()
                    if cached_status in telegram.MEMBER_STATUSES
-                   else settings.membership_ttl_nonmember_hours)
+                   else db.get_membership_ttl_nonmember_hours())
             if age_hours <= ttl:
                 status = cached_status
         if status is None:
             status = await _get_member_status(bot, chat, user_id)
-            await asyncio.sleep(settings.member_check_delay)
+            await asyncio.sleep(db.get_member_check_delay())
             if status is None:
                 # fail-open: не исключаем, но и не кэшируем неуспех
                 logger.warning("fail-open: членство %s в %s неизвестно, шлём",
@@ -163,7 +163,7 @@ async def _run_dry_run(campaign_id: int) -> None:
         # dry-run растягивается на десятки минут).
         for bot in bots:
             rows = db.pending_recipients(campaign_id, bot, limit=10_000_000)
-            sem = asyncio.Semaphore(settings.membership_check_concurrency)
+            sem = asyncio.Semaphore(db.get_membership_check_concurrency())
             await asyncio.gather(
                 *(_check_membership_and_mark(campaign_id, bot, row, sem) for row in rows)
             )
@@ -241,7 +241,7 @@ async def _run_send(campaign_id: int) -> None:
 async def _send_for_bot(campaign_id: int, bot: str, text: str,
                         parse_mode: str, image_path: Optional[str] = None) -> None:
     token = settings.bot_tokens[bot]
-    interval = settings.send_delay
+    interval = db.get_send_delay()
     # счётчик повторов временных сбоев (сеть, 5xx) по каждому юзеру
     transient_tries: dict[int, int] = {}
     # file_id картинки для этого бота: первому получателю грузим файл, из
@@ -378,7 +378,7 @@ async def _queue_tick() -> None:
 
 async def _queue_processor() -> None:
     while True:
-        await asyncio.sleep(settings.queue_tick_seconds)
+        await asyncio.sleep(db.get_queue_tick_seconds())
         try:
             await _queue_tick()
         except Exception:
@@ -420,8 +420,9 @@ async def cancel_campaign(campaign_id: int) -> bool:
 async def send_test(campaign_id: int) -> tuple[bool, str]:
     """Отправка текста кампании админу каждым выбранным ботом — заодно
     проверяет разметку (parse_mode) до массовой отправки."""
-    if not settings.admin_chat_id:
-        return False, "ADMIN_CHAT_ID не задан в .env"
+    admin_chat_id = db.get_admin_chat_id()
+    if not admin_chat_id:
+        return False, "Chat ID администратора не задан в «Настройках»"
     campaign = db.get_campaign(campaign_id)
     if campaign is None:
         return False, "кампания не найдена"
@@ -436,19 +437,19 @@ async def send_test(campaign_id: int) -> tuple[bool, str]:
     for bot in campaign["bots"].split(","):
         if not bot:
             continue
-        label = settings.bot_labels.get(bot, bot)
+        label = db.get_bot_label(bot)
         for attempt in (1, 2):
             try:
                 if image_path:
                     await telegram.send_photo(
-                        settings.bot_tokens[bot], settings.admin_chat_id,
+                        settings.bot_tokens[bot], admin_chat_id,
                         (os.path.basename(image_path), image_bytes),
                         caption=campaign["message_text"],
                         parse_mode=campaign["parse_mode"],
                     )
                 else:
                     await telegram.send_message(
-                        settings.bot_tokens[bot], settings.admin_chat_id,
+                        settings.bot_tokens[bot], admin_chat_id,
                         campaign["message_text"], campaign["parse_mode"],
                     )
                 results.append(f"{label}: отправлено")

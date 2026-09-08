@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import ipaddress
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -21,7 +22,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -46,13 +47,14 @@ def _configure_logging() -> None:
     """Без этого INFO-логи (прогресс dry-run/отправки, resume после
     рестарта) молча теряются: без явной настройки root-логгер отдаёт в
     stderr только WARNING и выше, а именно stderr смотрит `docker compose
-    logs`."""
-    level = getattr(logging, settings.log_level, logging.INFO)
+    logs`. Уровень — из БД (страница «Настройки»), поэтому вызывается не
+    один раз при импорте, а из lifespan (после db.init_db() — раньше
+    хранилища ещё нет) и повторно при сохранении настроек, чтобы новый
+    уровень применялся сразу, без рестарта."""
+    level = getattr(logging, db.get_log_level(), logging.INFO)
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger().setLevel(level)
 
-
-_configure_logging()
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -104,12 +106,15 @@ templates.env.globals["status_class"] = lambda s: STATUS_CLASS.get(s, "badge-gre
 templates.env.globals["recipient_status_label"] = lambda s: RECIPIENT_STATUS_LABELS.get(s, s)
 templates.env.globals["recipient_status_short"] = lambda s: RECIPIENT_STATUS_SHORT.get(s, s)
 templates.env.globals["recipient_statuses"] = list(RECIPIENT_STATUS_LABELS.keys())
-templates.env.globals["bot_labels"] = settings.bot_labels
+# Функция, а не словарь-снапшот: названия ботов теперь редактируются на
+# /settings и должны отражаться сразу, без рестарта — {{ bot_labels().get('A') }}.
+templates.env.globals["bot_labels"] = lambda: {"A": db.get_bot_label("A"), "B": db.get_bot_label("B")}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    _configure_logging()  # только теперь: до init_db() читать уровень неоткуда
     Path(settings.uploads_dir).mkdir(parents=True, exist_ok=True)
     from . import worker  # локальный импорт: модуль появится позже
 
@@ -121,6 +126,37 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+
+def _is_private_client(host: str) -> bool:
+    """Приватный/локальный адрес — в том числе то, как выглядит трафик
+    через SSH-туннель изнутри контейнера (Docker подменяет источник на
+    адрес своего бридж-шлюза, а не буквальный 127.0.0.1, но этот шлюз
+    всегда лежит в приватном диапазоне). Нераспознанный host (например,
+    заглушка тестового клиента в pytest — в проде ASGI-сервер всегда
+    отдаёт настоящий IP или None) тоже считаем доверенным."""
+    try:
+        return ipaddress.ip_address(host).is_private
+    except ValueError:
+        return True
+
+
+@app.middleware("http")
+async def restrict_external_access(request: Request, call_next):
+    """Порт в docker-compose теперь всегда смотрит наружу (0.0.0.0) —
+    решение "пускать снаружи или нет" переехало сюда, из .env в БД, чтобы
+    включаться/выключаться кнопкой на /settings без правки .env и рестарта
+    контейнера. /health — исключение, его дёргают скрипты деплоя."""
+    if request.url.path == "/health":
+        return await call_next(request)
+    client_host = request.client.host if request.client else None
+    if client_host and not _is_private_client(client_host) and not db.get_external_access():
+        return PlainTextResponse(
+            "Доступ с внешних адресов отключён. Зайдите через SSH-туннель"
+            " и включите его в «Настройках», если это действительно нужно.",
+            status_code=403,
+        )
+    return await call_next(request)
 
 
 def redirect(path: str, msg: str | None = None, status_code: int = 303) -> RedirectResponse:
@@ -278,6 +314,83 @@ async def health():
     except Exception:
         raise HTTPException(status_code=503, detail="db unavailable")
     return {"status": "ok"}
+
+
+# ------------------------------------------------------------- настройки
+
+
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+
+
+@app.get("/settings", dependencies=[Depends(require_auth)])
+async def settings_page(request: Request):
+    return render(
+        request,
+        "settings.html",
+        external_access=db.get_external_access(),
+        send_delay=db.get_send_delay(),
+        member_check_delay=db.get_member_check_delay(),
+        membership_ttl_hours=db.get_membership_ttl_hours(),
+        membership_ttl_nonmember_hours=db.get_membership_ttl_nonmember_hours(),
+        membership_check_concurrency=db.get_membership_check_concurrency(),
+        queue_tick_seconds=db.get_queue_tick_seconds(),
+        exclude_chats=",".join(db.get_exclude_chats()),
+        admin_chat_id=db.get_admin_chat_id(),
+        bot_a_label=db.get_bot_label("A"),
+        bot_b_label=db.get_bot_label("B"),
+        log_level=db.get_log_level(),
+        log_levels=LOG_LEVELS,
+        csrf=csrf_token(request),
+    )
+
+
+@app.post("/settings/external-access", dependencies=[Depends(require_auth)])
+async def settings_external_access(request: Request, enabled: str = Form(""),
+                                   csrf: str = Form("")):
+    verify_csrf(request, csrf)
+    db.set_external_access(enabled == "1")
+    return redirect("/settings", "Сохранено")
+
+
+@app.post("/settings/params", dependencies=[Depends(require_auth)])
+async def settings_params(
+    request: Request,
+    send_delay: str = Form(...),
+    member_check_delay: str = Form(...),
+    membership_ttl_hours: str = Form(...),
+    membership_ttl_nonmember_hours: str = Form(...),
+    membership_check_concurrency: str = Form(...),
+    queue_tick_seconds: str = Form(...),
+    exclude_chats: str = Form(""),
+    admin_chat_id: str = Form(""),
+    bot_a_label: str = Form(""),
+    bot_b_label: str = Form(""),
+    log_level: str = Form("INFO"),
+    csrf: str = Form(""),
+):
+    verify_csrf(request, csrf)
+    try:
+        numeric = {
+            "send_delay": str(float(send_delay)),
+            "member_check_delay": str(float(member_check_delay)),
+            "membership_ttl_hours": str(float(membership_ttl_hours)),
+            "membership_ttl_nonmember_hours": str(float(membership_ttl_nonmember_hours)),
+            "membership_check_concurrency": str(int(membership_check_concurrency)),
+            "queue_tick_seconds": str(float(queue_tick_seconds)),
+            "admin_chat_id": str(int(admin_chat_id or "0")),
+        }
+    except ValueError:
+        return redirect("/settings", "Проверьте числовые поля — где-то введено не число")
+    if log_level not in LOG_LEVELS:
+        return redirect("/settings", "Недопустимый уровень логирования")
+    for key, value in numeric.items():
+        db.set_setting(key, value)
+    db.set_setting("exclude_chats", exclude_chats.strip())
+    db.set_setting("bot_a_label", bot_a_label.strip() or settings.bot_labels.get("A", "A"))
+    db.set_setting("bot_b_label", bot_b_label.strip() or settings.bot_labels.get("B", "B"))
+    db.set_setting("log_level", log_level)
+    _configure_logging()  # применить новый уровень сразу
+    return redirect("/settings", "Сохранено")
 
 
 # --------------------------------------------------------------- дашборд

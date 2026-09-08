@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Настройки — Админка рассылок{% endblock %}
+{% block content %}
+  <h1>Настройки</h1>
+
+  <div class="card">
+    <h2>Доступ с внешних адресов</h2>
+    <p>
+      Статус:
+      {% if external_access %}
+        <span class="badge badge-red">Включён</span>
+      {% else %}
+        <span class="badge badge-green">Выключен (только через SSH-туннель)</span>
+      {% endif %}
+    </p>
+    <p class="hint">
+      По умолчанию панель отвечает только на запросы с локальных/туннельных
+      адресов — прямые обращения с внешних IP получают отказ ещё до формы
+      входа. Если включить, порт станет доступен всем: трафик идёт по
+      <strong>HTTP без шифрования</strong> — пароль и сессионная cookie
+      передаются открытым текстом, и порт будут сканировать боты. Включайте,
+      только если временно нужен доступ без туннеля, и выключайте обратно
+      сразу после.
+    </p>
+    <form method="post" action="/settings/external-access">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      {% if external_access %}
+        <input type="hidden" name="enabled" value="0">
+        <button type="submit" class="button-secondary">Выключить</button>
+      {% else %}
+        <input type="hidden" name="enabled" value="1">
+        <button type="submit" class="button-caution">Включить, понимаю риск</button>
+      {% endif %}
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Параметры рассылки</h2>
+    <p class="hint">
+      Применяются сразу, без рестарта контейнера — ближайшая отправка/dry-run
+      подхватит новое значение.
+    </p>
+    <form method="post" action="/settings/params" class="form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+
+      <label for="send_delay">Пауза между отправками, сек</label>
+      <input type="text" inputmode="decimal" id="send_delay" name="send_delay" value="{{ send_delay }}">
+      <p class="hint">Ограничение Telegram — около 12 сообщений в секунду, значит не меньше ~0.08.</p>
+
+      <label for="member_check_delay">Пауза между проверками членства в чате, сек</label>
+      <input type="text" inputmode="decimal" id="member_check_delay" name="member_check_delay" value="{{ member_check_delay }}">
+
+      <label for="membership_ttl_hours">Срок жизни кэша «участник», часов</label>
+      <input type="text" inputmode="decimal" id="membership_ttl_hours" name="membership_ttl_hours" value="{{ membership_ttl_hours }}">
+      <p class="hint">Можно кэшировать надолго — устаревание тут стоит недорого: лишний пропуск, не более.</p>
+
+      <label for="membership_ttl_nonmember_hours">Срок жизни кэша «не участник», часов</label>
+      <input type="text" inputmode="decimal" id="membership_ttl_nonmember_hours" name="membership_ttl_nonmember_hours" value="{{ membership_ttl_nonmember_hours }}">
+      <p class="hint">Короче предыдущего: устаревание тут значит письмо тому, кто уже вступил в чат.</p>
+
+      <label for="membership_check_concurrency">Параллельность проверки членства при dry-run</label>
+      <input type="text" inputmode="numeric" id="membership_check_concurrency" name="membership_check_concurrency" value="{{ membership_check_concurrency }}">
+
+      <label for="queue_tick_seconds">Период проверки очереди отправки, сек</label>
+      <input type="text" inputmode="decimal" id="queue_tick_seconds" name="queue_tick_seconds" value="{{ queue_tick_seconds }}">
+
+      <label for="exclude_chats">Исключённые чаты (через запятую, с @)</label>
+      <input type="text" id="exclude_chats" name="exclude_chats" value="{{ exclude_chats }}">
+      <p class="hint">Участников этих чатов/каналов не рассылаем.</p>
+
+      <label for="admin_chat_id">Chat ID администратора</label>
+      <input type="text" inputmode="numeric" id="admin_chat_id" name="admin_chat_id" value="{{ admin_chat_id }}">
+      <p class="hint">Сюда уходит «тестовая отправка на себя»; узнать свой ID можно у @userinfobot.</p>
+
+      <label for="bot_a_label">Название бота A</label>
+      <input type="text" id="bot_a_label" name="bot_a_label" value="{{ bot_a_label }}">
+
+      <label for="bot_b_label">Название бота B</label>
+      <input type="text" id="bot_b_label" name="bot_b_label" value="{{ bot_b_label }}">
+
+      <label for="log_level">Уровень логирования</label>
+      <select id="log_level" name="log_level">
+        {% for lvl in log_levels %}
+          <option value="{{ lvl }}" {% if lvl == log_level %}selected{% endif %}>{{ lvl }}</option>
+        {% endfor %}
+      </select>
+      <p class="hint">INFO нужен, чтобы прогресс кампаний был виден в <code>docker compose logs</code>.</p>
+
+      <button type="submit">Сохранить</button>
+    </form>
+  </div>
+{% endblock %}

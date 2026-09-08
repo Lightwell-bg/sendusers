@@ -325,3 +325,61 @@ def test_migrate_adds_image_path_to_old_db(tmp_path):
     assert "image_path" in cols
     db._migrate(conn)  # идемпотентно, без ошибки
     conn.close()
+
+
+# ------------------------------------------------------------- app_settings
+
+def test_get_setting_returns_default_when_missing():
+    assert db.get_setting("nonexistent_key", "fallback") == "fallback"
+
+
+def test_set_setting_then_get_returns_saved_value():
+    db.set_setting("some_key", "42")
+    assert db.get_setting("some_key", "fallback") == "42"
+
+
+def test_set_setting_overwrites_existing_value():
+    db.set_setting("some_key", "1")
+    db.set_setting("some_key", "2")
+    assert db.get_setting("some_key", "fallback") == "2"
+
+
+def test_external_access_defaults_to_disabled():
+    assert db.get_external_access() is False
+
+
+def test_external_access_toggle_round_trip():
+    db.set_external_access(True)
+    assert db.get_external_access() is True
+    db.set_external_access(False)
+    assert db.get_external_access() is False
+
+
+def test_typed_getters_fall_back_to_settings_defaults():
+    """Без записи в БД каждый типизированный геттер отдаёт то же значение,
+    что раньше было жёстко зашито в config.py/.env — апгрейд с уже
+    существующей broadcast.db не меняет поведение, пока админ сам не
+    зайдёт на /settings и не поменяет значение."""
+    from app.config import settings
+
+    assert db.get_send_delay() == settings.send_delay
+    assert db.get_member_check_delay() == settings.member_check_delay
+    assert db.get_membership_ttl_hours() == settings.membership_ttl_hours
+    assert db.get_membership_ttl_nonmember_hours() == settings.membership_ttl_nonmember_hours
+    assert db.get_membership_check_concurrency() == settings.membership_check_concurrency
+    assert db.get_queue_tick_seconds() == settings.queue_tick_seconds
+    assert db.get_exclude_chats() == settings.exclude_chats
+    assert db.get_admin_chat_id() == settings.admin_chat_id
+    assert db.get_bot_label("A") == settings.bot_labels.get("A")
+    assert db.get_log_level() == settings.log_level
+
+
+def test_typed_getter_reflects_saved_override():
+    db.set_setting("send_delay", "0.5")
+    assert db.get_send_delay() == 0.5
+
+    db.set_setting("exclude_chats", "@one,@two")
+    assert db.get_exclude_chats() == ("@one", "@two")
+
+    db.set_setting("bot_a_label", "Мой бот")
+    assert db.get_bot_label("A") == "Мой бот"

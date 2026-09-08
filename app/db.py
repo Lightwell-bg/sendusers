@@ -74,6 +74,11 @@ CREATE TABLE IF NOT EXISTS blocked_users (
     blocked_at  TEXT NOT NULL,
     PRIMARY KEY (bot, user_id)
 );
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 _conn: Optional[sqlite3.Connection] = None
@@ -442,3 +447,92 @@ def scheduled_campaigns() -> list[sqlite3.Row]:
     return get_conn().execute(
         "SELECT * FROM campaigns WHERE status='scheduled' ORDER BY scheduled_at ASC, id ASC"
     ).fetchall()
+
+
+# ---------------------------------------------------------- настройки приложения
+#
+# Некритичные настройки поведения живут здесь, а не в .env — правятся на
+# странице «Настройки» и применяются сразу, без рестарта контейнера. В .env
+# остаются только секреты (токены, пароль, ключ подписи) и то, что нужно
+# ДО того, как это хранилище вообще существует (пути к БД, порт, HOST/PORT
+# самого uvicorn) — их сюда переносить нельзя, курица и яйцо.
+#
+# Значение по умолчанию для каждой настройки — то же, что было раньше
+# захардкожено в .env.example/config.py, так что апгрейд с уже
+# существующей broadcast.db ничего не меняет в поведении, пока админ сам
+# не поменяет значение на /settings.
+
+def get_setting(key: str, default: str) -> str:
+    row = get_conn().execute(
+        "SELECT value FROM app_settings WHERE key=?", (key,)
+    ).fetchone()
+    return row["value"] if row is not None else default
+
+
+def set_setting(key: str, value: str) -> None:
+    with _lock:
+        get_conn().execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?)"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+        get_conn().commit()
+
+
+def get_external_access() -> bool:
+    """Разрешён ли вход с внешних (не локальных/туннельных) адресов.
+    По умолчанию (записи нет) — выключено."""
+    return get_setting("external_access", "0") == "1"
+
+
+def set_external_access(enabled: bool) -> None:
+    set_setting("external_access", "1" if enabled else "0")
+
+
+def get_send_delay() -> float:
+    return float(get_setting("send_delay", str(settings.send_delay)))
+
+
+def get_member_check_delay() -> float:
+    return float(get_setting("member_check_delay", str(settings.member_check_delay)))
+
+
+def get_membership_ttl_hours() -> float:
+    return float(get_setting("membership_ttl_hours", str(settings.membership_ttl_hours)))
+
+
+def get_membership_ttl_nonmember_hours() -> float:
+    return float(get_setting(
+        "membership_ttl_nonmember_hours", str(settings.membership_ttl_nonmember_hours)
+    ))
+
+
+def get_membership_check_concurrency() -> int:
+    return int(get_setting(
+        "membership_check_concurrency", str(settings.membership_check_concurrency)
+    ))
+
+
+def get_queue_tick_seconds() -> float:
+    return float(get_setting("queue_tick_seconds", str(settings.queue_tick_seconds)))
+
+
+def get_exclude_chats() -> tuple[str, ...]:
+    raw = get_setting("exclude_chats", ",".join(settings.exclude_chats))
+    return tuple(c.strip() for c in raw.split(",") if c.strip())
+
+
+def get_admin_chat_id() -> int:
+    try:
+        return int(get_setting("admin_chat_id", str(settings.admin_chat_id)))
+    except ValueError:
+        return 0
+
+
+def get_bot_label(bot: str) -> str:
+    default = settings.bot_labels.get(bot, bot)
+    return get_setting(f"bot_{bot.lower()}_label", default)
+
+
+def get_log_level() -> str:
+    return get_setting("log_level", settings.log_level)
