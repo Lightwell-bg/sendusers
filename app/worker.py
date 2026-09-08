@@ -347,7 +347,10 @@ async def _queue_tick() -> None:
 async def _queue_processor() -> None:
     while True:
         await asyncio.sleep(settings.queue_tick_seconds)
-        await _queue_tick()
+        try:
+            await _queue_tick()
+        except Exception:
+            logger.exception("Тик очереди упал — продолжаю цикл")
 
 
 def start_queue_processor() -> None:
