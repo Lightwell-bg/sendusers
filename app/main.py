@@ -71,9 +71,9 @@ STATUS_CLASS = {
     "draft": "badge-grey",
     "dry_running": "badge-blue",
     "ready": "badge-teal",
-    "scheduled": "badge-blue",
+    "scheduled": "badge-purple",
     "running": "badge-orange",
-    "paused": "badge-orange",
+    "paused": "badge-amber",
     "done": "badge-green",
     "failed": "badge-red",
     "cancelled": "badge-red",
@@ -86,12 +86,23 @@ RECIPIENT_STATUS_LABELS = {
     "blocked": "Заблокировал бота",
     "error": "Ошибка",
 }
+# Короткие варианты — только для узких заголовков таблицы счётчиков; полный
+# текст остаётся во всплывающей подсказке (title), см. recipient_status_label.
+RECIPIENT_STATUS_SHORT = {
+    "pending": "В очереди",
+    "sending": "Отправляется",
+    "sent": "Отправлено",
+    "skipped_member": "Пропущен",
+    "blocked": "Заблокировал",
+    "error": "Ошибка",
+}
 POLLING_STATUSES = ("dry_running", "scheduled", "running")
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 templates.env.globals["status_label"] = lambda s: STATUS_LABELS.get(s, s)
 templates.env.globals["status_class"] = lambda s: STATUS_CLASS.get(s, "badge-grey")
 templates.env.globals["recipient_status_label"] = lambda s: RECIPIENT_STATUS_LABELS.get(s, s)
+templates.env.globals["recipient_status_short"] = lambda s: RECIPIENT_STATUS_SHORT.get(s, s)
 templates.env.globals["recipient_statuses"] = list(RECIPIENT_STATUS_LABELS.keys())
 templates.env.globals["bot_labels"] = settings.bot_labels
 

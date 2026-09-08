@@ -11,7 +11,7 @@
 базы рассылок:
 
 ```bash
-ssh vlad@<VPS>
+ssh vlad@64.23.190.210
 mkdir -p ~/backups/$(date +%Y-%m-%d)
 sudo cp /opt/bginfobot/data/bot_data.sqlite      ~/backups/$(date +%Y-%m-%d)/
 sudo cp /opt/bginfoai/data/chat_logs.db          ~/backups/$(date +%Y-%m-%d)/
@@ -48,7 +48,7 @@ docker inspect bginfoai --format '{{ json .Mounts }}' | jq
 переписки/памяти проекта), дальше просто:
 
 ```bash
-ssh vlad@<VPS>
+ssh vlad@64.23.190.210
 cd /opt/broadcast-admin
 git pull
 cp .env.example .env   # только при самом первом разе — дальше сверять новые переменные
@@ -113,7 +113,7 @@ curl -s http://127.0.0.1:${HOST_PORT:-8090}/health   # {"status": "ok"}
 машины проброс:
 
 ```bash
-ssh -L 8090:127.0.0.1:8090 vlad@<VPS>
+ssh -L 8090:127.0.0.1:8090 vlad@64.23.190.210
 ```
 
 Затем открыть в браузере: http://127.0.0.1:8090

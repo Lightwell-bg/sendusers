@@ -7,7 +7,9 @@
   --fg-muted: #9aa0aa;
   --border: #2b2f37;
   --accent: #4f8cff;
+  --caution: #d9a441;
   --danger: #e5533d;
+  color-scheme: dark; /* нативные виджеты (datetime-picker и т.п.) сразу в тёмной теме */
 }
 
 * { box-sizing: border-box; }
@@ -82,7 +84,12 @@ h1 { margin-top: 0; }
   padding: 8px 10px;
   text-align: left;
 }
-.data-table th { color: var(--fg-muted); font-weight: 600; }
+.data-table th {
+  color: var(--fg-muted);
+  font-weight: 600;
+  font-size: 13px;
+  cursor: default;
+}
 
 .badge {
   display: inline-block;
@@ -95,7 +102,9 @@ h1 { margin-top: 0; }
 .badge-grey   { background: #9aa0aa; }
 .badge-blue   { background: #4f8cff; color: #fff; }
 .badge-teal   { background: #2bb3a3; color: #fff; }
+.badge-purple { background: #8b7cf6; color: #fff; }
 .badge-orange { background: #e08a2c; }
+.badge-amber  { background: #d9a441; }
 .badge-green  { background: #3fb765; }
 .badge-red    { background: #e5533d; color: #fff; }
 
@@ -128,7 +137,8 @@ h1 { margin-top: 0; }
 
 .form { display: flex; flex-direction: column; gap: 8px; max-width: 560px; }
 .form label { font-weight: 600; margin-top: 8px; }
-.form input[type=text], .form textarea, .form select, input[type=password] {
+.form input[type=text], .form textarea, .form select, input[type=password],
+input[type=datetime-local] {
   background: var(--bg-card);
   border: 1px solid var(--border);
   color: var(--fg);
@@ -137,6 +147,7 @@ h1 { margin-top: 0; }
   font-family: inherit;
   font-size: inherit;
 }
+input[type=datetime-local] { margin-right: 8px; }
 fieldset { border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; }
 .checkbox-label { display: block; margin: 4px 0; font-weight: normal; }
 .hint { color: var(--fg-muted); font-size: 13px; margin: 4px 0 0; }
@@ -154,6 +165,18 @@ button, .button-secondary {
   margin-right: 8px;
 }
 .button-secondary { background: transparent; border: 1px solid var(--border); color: var(--fg); }
+/* Осторожное/опасное действие — обводка своим цветом, не заливка, чтобы
+   не спорить взглядом с основной кнопкой (см. .action-group). */
+.button-caution {
+  background: transparent;
+  border: 1px solid var(--caution);
+  color: var(--caution);
+}
+.button-danger {
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+}
 .link-button {
   background: none;
   border: none;
@@ -187,7 +210,27 @@ button, .button-secondary {
 .editor-toolbar.disabled { opacity: 0.4; }
 .editor-toolbar button:disabled { cursor: not-allowed; }
 
-.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.actions { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+/* Группа однородных по смыслу действий (например «отправить сейчас» отдельно
+   от «подготовить») — раз действий на карточке кампании обычно несколько
+   разного веса, группировка вместо одного ряда даёт глазу за что зацепиться. */
+.action-group { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.action-group + .action-group { margin-top: 4px; }
+/* Планирование времени — своя рамка, чтобы дата/время не смотрелись
+   случайно воткнутыми между кнопками. */
+.schedule-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 4px;
+}
+.schedule-box .schedule-label { color: var(--fg-muted); font-size: 13px; white-space: nowrap; }
+.schedule-box input[type=datetime-local] { margin-right: 0; }
+.schedule-box button { margin: 0; }
 .pagination { display: flex; gap: 12px; align-items: center; margin-bottom: 20px; }
 
 .login-page {

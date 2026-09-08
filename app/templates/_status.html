@@ -7,7 +7,7 @@
     <thead>
       <tr>
         <th>Бот</th>
-        {% for st in recipient_statuses %}<th>{{ recipient_status_label(st) }}</th>{% endfor %}
+        {% for st in recipient_statuses %}<th title="{{ recipient_status_label(st) }}">{{ recipient_status_short(st) }}</th>{% endfor %}
       </tr>
     </thead>
     <tbody>

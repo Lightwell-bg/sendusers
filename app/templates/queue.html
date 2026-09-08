@@ -45,21 +45,23 @@
               {% endif %}
             </td>
             <td>
-              <form method="post" action="/campaigns/{{ c.id }}/send" class="inline-form">
-                <input type="hidden" name="csrf" value="{{ csrf }}">
-                <button type="submit">Отправить сейчас</button>
-              </form>
-              <form method="post" action="/campaigns/{{ c.id }}/schedule" class="inline-form" data-schedule-form>
+              <div class="action-group">
+                <form method="post" action="/campaigns/{{ c.id }}/send" class="inline-form">
+                  <input type="hidden" name="csrf" value="{{ csrf }}">
+                  <button type="submit">Отправить сейчас</button>
+                </form>
+                <form method="post" action="/campaigns/{{ c.id }}/unschedule" class="inline-form">
+                  <input type="hidden" name="csrf" value="{{ csrf }}">
+                  <button type="submit" class="button-caution">Снять с расписания</button>
+                </form>
+                <a class="button-secondary" href="/campaigns/{{ c.id }}">Открыть</a>
+              </div>
+              <form method="post" action="/campaigns/{{ c.id }}/schedule" class="schedule-box" data-schedule-form>
                 <input type="hidden" name="csrf" value="{{ csrf }}">
                 <input type="hidden" name="scheduled_at" data-utc-datetime>
                 <input type="datetime-local" data-local-datetime required>
-                <button type="submit">Изменить время</button>
+                <button type="submit" class="button-secondary">Изменить время</button>
               </form>
-              <form method="post" action="/campaigns/{{ c.id }}/unschedule" class="inline-form">
-                <input type="hidden" name="csrf" value="{{ csrf }}">
-                <button type="submit">Снять с расписания</button>
-              </form>
-              <a class="button-secondary" href="/campaigns/{{ c.id }}">Открыть</a>
             </td>
           </tr>
         {% endfor %}
