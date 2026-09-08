@@ -59,6 +59,7 @@ STATUS_LABELS = {
     "draft": "Черновик",
     "dry_running": "Тестовый прогон",
     "ready": "Готова к отправке",
+    "scheduled": "Запланирована",
     "running": "Идёт отправка",
     "paused": "Приостановлена",
     "done": "Завершена",
@@ -69,6 +70,7 @@ STATUS_CLASS = {
     "draft": "badge-grey",
     "dry_running": "badge-blue",
     "ready": "badge-teal",
+    "scheduled": "badge-blue",
     "running": "badge-orange",
     "paused": "badge-orange",
     "done": "badge-green",
@@ -278,6 +280,17 @@ async def history(request: Request, page: int = 1):
     )
 
 
+@app.get("/queue", dependencies=[Depends(require_auth)])
+async def queue(request: Request):
+    return render(
+        request,
+        "queue.html",
+        campaigns=db.scheduled_campaigns(),
+        now=db.now(),
+        csrf=csrf_token(request),
+    )
+
+
 # ------------------------------------------------------------- кампании
 
 
@@ -434,6 +447,29 @@ async def campaign_send(request: Request, campaign_id: int, csrf: str = Form("")
     from . import worker
 
     ok = await worker.send_now(campaign_id)
+    msg = None if ok else "недопустимый статус"
+    return redirect(f"/campaigns/{campaign_id}", msg)
+
+
+@app.post("/campaigns/{campaign_id}/schedule", dependencies=[Depends(require_auth)])
+async def campaign_schedule(request: Request, campaign_id: int,
+                            scheduled_at: str = Form(...), csrf: str = Form("")):
+    verify_csrf(request, csrf)
+    from . import worker
+
+    if not scheduled_at.strip():
+        return redirect(f"/campaigns/{campaign_id}", "Укажите время отправки")
+    ok = await worker.schedule_campaign(campaign_id, scheduled_at)
+    msg = None if ok else "недопустимый статус"
+    return redirect(f"/campaigns/{campaign_id}", msg)
+
+
+@app.post("/campaigns/{campaign_id}/unschedule", dependencies=[Depends(require_auth)])
+async def campaign_unschedule(request: Request, campaign_id: int, csrf: str = Form("")):
+    verify_csrf(request, csrf)
+    from . import worker
+
+    ok = await worker.unschedule_campaign(campaign_id)
     msg = None if ok else "недопустимый статус"
     return redirect(f"/campaigns/{campaign_id}", msg)
 

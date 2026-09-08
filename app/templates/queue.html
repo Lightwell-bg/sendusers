@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Очередь — Админка рассылок{% endblock %}
+{% block content %}
+  <h1>Очередь отправки</h1>
+
+  {% if campaigns %}
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Время (UTC)</th>
+          <th>Название</th>
+          <th>Боты</th>
+          <th></th>
+          <th>Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in campaigns %}
+          <tr>
+            <td>{{ c.scheduled_at }}</td>
+            <td><a href="/campaigns/{{ c.id }}">{{ c.title }}</a></td>
+            <td>{{ c.bots }}</td>
+            <td>
+              {% if c.scheduled_at < now %}
+                <span class="badge badge-red">Просрочено</span>
+              {% endif %}
+            </td>
+            <td>
+              <form method="post" action="/campaigns/{{ c.id }}/send" class="inline-form">
+                <input type="hidden" name="csrf" value="{{ csrf }}">
+                <button type="submit">Отправить сейчас</button>
+              </form>
+              <form method="post" action="/campaigns/{{ c.id }}/schedule" class="inline-form" data-schedule-form>
+                <input type="hidden" name="csrf" value="{{ csrf }}">
+                <input type="hidden" name="scheduled_at" data-utc-datetime>
+                <input type="datetime-local" data-local-datetime required>
+                <button type="submit">Изменить время</button>
+              </form>
+              <form method="post" action="/campaigns/{{ c.id }}/unschedule" class="inline-form">
+                <input type="hidden" name="csrf" value="{{ csrf }}">
+                <button type="submit">Снять с расписания</button>
+              </form>
+              <a class="button-secondary" href="/campaigns/{{ c.id }}">Открыть</a>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">Очередь пуста.</p>
+  {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/schedule.js"></script>
+{% endblock %}

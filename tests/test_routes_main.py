@@ -121,3 +121,109 @@ def test_full_campaign_lifecycle_via_http(monkeypatch):
         csv = c.get(f"/campaigns/{cid}/export.csv")
         assert csv.status_code == 200
         assert "sent" in csv.text
+
+
+def test_schedule_and_queue_page(monkeypatch):
+    async def all_left(token, chat, user_id):
+        return "left"
+
+    monkeypatch.setattr(worker.telegram, "get_chat_member_status", all_left)
+
+    with TestClient(app) as c:
+        _login(c)
+        csrf = _csrf(c)
+        r = c.post(
+            "/campaigns",
+            data={"title": "очередь", "message_text": "x", "parse_mode": "",
+                  "bots": "A", "csrf": csrf},
+            follow_redirects=False,
+        )
+        cid = int(r.headers["location"].rstrip("/").split("/")[-1])
+
+        csrf = _csrf(c, f"/campaigns/{cid}")
+        c.post(f"/campaigns/{cid}/dry_run", data={"csrf": csrf}, follow_redirects=False)
+        _wait_until_not_polling(c, cid)
+
+        csrf = _csrf(c, f"/campaigns/{cid}")
+        r = c.post(
+            f"/campaigns/{cid}/schedule",
+            data={"csrf": csrf, "scheduled_at": "2099-01-01 00:00:00"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        assert db.get_campaign(cid)["status"] == "scheduled"
+
+        page = c.get("/queue")
+        assert page.status_code == 200
+        assert "очередь" in page.text
+        assert "2099-01-01" in page.text
+
+
+def test_unschedule_returns_to_ready(monkeypatch):
+    async def all_left(token, chat, user_id):
+        return "left"
+
+    monkeypatch.setattr(worker.telegram, "get_chat_member_status", all_left)
+
+    with TestClient(app) as c:
+        _login(c)
+        csrf = _csrf(c)
+        r = c.post(
+            "/campaigns",
+            data={"title": "u", "message_text": "x", "parse_mode": "",
+                  "bots": "A", "csrf": csrf},
+            follow_redirects=False,
+        )
+        cid = int(r.headers["location"].rstrip("/").split("/")[-1])
+
+        csrf = _csrf(c, f"/campaigns/{cid}")
+        c.post(f"/campaigns/{cid}/dry_run", data={"csrf": csrf}, follow_redirects=False)
+        _wait_until_not_polling(c, cid)
+
+        csrf = _csrf(c, f"/campaigns/{cid}")
+        c.post(
+            f"/campaigns/{cid}/schedule",
+            data={"csrf": csrf, "scheduled_at": "2099-01-01 00:00:00"},
+            follow_redirects=False,
+        )
+
+        csrf = _csrf(c, f"/campaigns/{cid}")
+        r = c.post(f"/campaigns/{cid}/unschedule", data={"csrf": csrf}, follow_redirects=False)
+
+        assert r.status_code == 303
+        assert db.get_campaign(cid)["status"] == "ready"
+
+
+def test_cancel_scheduled_campaign_via_http(monkeypatch):
+    async def all_left(token, chat, user_id):
+        return "left"
+
+    monkeypatch.setattr(worker.telegram, "get_chat_member_status", all_left)
+
+    with TestClient(app) as c:
+        _login(c)
+        csrf = _csrf(c)
+        r = c.post(
+            "/campaigns",
+            data={"title": "c", "message_text": "x", "parse_mode": "",
+                  "bots": "A", "csrf": csrf},
+            follow_redirects=False,
+        )
+        cid = int(r.headers["location"].rstrip("/").split("/")[-1])
+
+        csrf = _csrf(c, f"/campaigns/{cid}")
+        c.post(f"/campaigns/{cid}/dry_run", data={"csrf": csrf}, follow_redirects=False)
+        _wait_until_not_polling(c, cid)
+
+        csrf = _csrf(c, f"/campaigns/{cid}")
+        c.post(
+            f"/campaigns/{cid}/schedule",
+            data={"csrf": csrf, "scheduled_at": "2099-01-01 00:00:00"},
+            follow_redirects=False,
+        )
+
+        csrf = _csrf(c, f"/campaigns/{cid}")
+        r = c.post(f"/campaigns/{cid}/cancel", data={"csrf": csrf}, follow_redirects=False)
+
+        assert r.status_code == 303
+        assert db.get_campaign(cid)["status"] == "cancelled"
