@@ -66,6 +66,8 @@ class Settings:
     # во время dry-run (иначе проверка идёт строго по одному и на аудиторию
     # в тысячи человек может занимать десятки минут).
     membership_check_concurrency: int = 5
+    # Период проверки очереди отправки (фоновый обработчик в worker.py), сек
+    queue_tick_seconds: float = 5.0
 
 
 def load_settings() -> Settings:
@@ -101,6 +103,7 @@ def load_settings() -> Settings:
         cookie_secure=os.environ.get("COOKIE_SECURE", "0").lower() in ("1", "true", "yes"),
         log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         membership_check_concurrency=int(os.environ.get("MEMBERSHIP_CHECK_CONCURRENCY", "5")),
+        queue_tick_seconds=float(os.environ.get("QUEUE_TICK_SECONDS", "5")),
     )
 
 

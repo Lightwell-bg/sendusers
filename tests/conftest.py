@@ -33,6 +33,7 @@ os.environ["BOT_A_DB_PATH"] = str(BOT_A_DB_PATH)
 os.environ["BOT_B_DB_PATH"] = str(BOT_B_DB_PATH)
 os.environ["BROADCAST_DB_PATH"] = str(BROADCAST_DB_PATH)
 os.environ["UPLOADS_DIR"] = str(_TMP_DIR / "uploads")
+os.environ["QUEUE_TICK_SECONDS"] = "0.05"
 
 
 def _create_bot_a_db() -> None:

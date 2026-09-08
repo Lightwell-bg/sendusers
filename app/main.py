@@ -83,7 +83,7 @@ RECIPIENT_STATUS_LABELS = {
     "blocked": "Заблокировал бота",
     "error": "Ошибка",
 }
-POLLING_STATUSES = ("dry_running", "running")
+POLLING_STATUSES = ("dry_running", "scheduled", "running")
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 templates.env.globals["status_label"] = lambda s: STATUS_LABELS.get(s, s)
@@ -100,6 +100,7 @@ async def lifespan(app: FastAPI):
     from . import worker  # локальный импорт: модуль появится позже
 
     await worker.resume_on_startup()
+    worker.start_queue_processor()
     yield
     db.close_db()
 
@@ -432,7 +433,7 @@ async def campaign_send(request: Request, campaign_id: int, csrf: str = Form("")
     verify_csrf(request, csrf)
     from . import worker
 
-    ok = await worker.start_send(campaign_id)
+    ok = await worker.send_now(campaign_id)
     msg = None if ok else "недопустимый статус"
     return redirect(f"/campaigns/{campaign_id}", msg)
 

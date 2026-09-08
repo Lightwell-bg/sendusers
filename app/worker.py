@@ -37,6 +37,9 @@ logger = logging.getLogger(__name__)
 _tasks: dict[int, asyncio.Task] = {}
 _control: dict[int, str] = {}
 _notes: dict[int, str] = {}
+# Момент старта текущего процесса — кампании, просроченные до этого момента
+# (сервис был выключен), очередь не подхватывает автоматически, см. _queue_tick.
+_process_start_time: str = ""
 
 
 def _task_alive(campaign_id: int) -> bool:
@@ -177,9 +180,13 @@ async def _run_dry_run(campaign_id: int) -> None:
 # --------------------------------------------------------------- отправка
 
 async def start_send(campaign_id: int) -> bool:
+    """Внутренняя точка входа — вызывается только из _queue_tick, когда
+    очередь свободна и кампания готова (уже в статусе 'scheduled'). Не
+    вызывать напрямую из роутов: сериализация держится на том, что этот
+    путь — единственный, кто переводит кампанию в running."""
     if _task_alive(campaign_id):
         return False
-    if not db.transition_campaign(campaign_id, ("ready", "paused"), "running"):
+    if not db.transition_campaign(campaign_id, ("scheduled",), "running"):
         return False
     _control.pop(campaign_id, None)
     _register(campaign_id, _run_send(campaign_id))
@@ -296,6 +303,60 @@ async def _send_for_bot(campaign_id: int, bot: str, text: str,
         await asyncio.sleep(max(0.0, interval - (time.monotonic() - t0)))
 
 
+# ------------------------------------------------------------- очередь
+
+async def schedule_campaign(campaign_id: int, scheduled_at: str,
+                            from_statuses: tuple[str, ...] = ("ready", "scheduled")) -> bool:
+    """Постановка в расписание (из 'ready') или смена времени у уже
+    запланированной (from_statuses по умолчанию покрывает оба случая)."""
+    ok = db.schedule_campaign(campaign_id, scheduled_at, from_statuses)
+    if ok:
+        logger.info("Кампания %s запланирована на %s", campaign_id, scheduled_at)
+    return ok
+
+
+async def send_now(campaign_id: int) -> bool:
+    """«Подтвердить отправку» (из ready) / «Продолжить» (из paused) /
+    «Отправить сейчас» на странице очереди (из scheduled) — все три ставят
+    кампанию в очередь на текущее время вместо прямого запуска, чтобы
+    никогда не обойти сериализацию отправок."""
+    return await schedule_campaign(campaign_id, db.now(),
+                                   from_statuses=("ready", "paused", "scheduled"))
+
+
+async def unschedule_campaign(campaign_id: int) -> bool:
+    ok = db.unschedule_campaign(campaign_id)
+    if ok:
+        logger.info("Кампания %s снята с расписания", campaign_id)
+    return ok
+
+
+async def _queue_tick() -> None:
+    """Один тик очереди: если ничего не отправляется — забирает самую
+    раннюю готовую кампанию из 'scheduled' и стартует. Кампании,
+    просроченные ещё до старта этого процесса, не трогает (см.
+    _process_start_time и db.next_due_scheduled_campaign)."""
+    if db.campaigns_in_status(("running",)):
+        return
+    row = db.next_due_scheduled_campaign(db.now(), _process_start_time)
+    if row is None:
+        return
+    await start_send(row["id"])
+
+
+async def _queue_processor() -> None:
+    while True:
+        await asyncio.sleep(settings.queue_tick_seconds)
+        await _queue_tick()
+
+
+def start_queue_processor() -> None:
+    """Запускает бесконечный фоновый цикл — вызывать один раз при старте
+    приложения (main.py:lifespan), не из тестов (тесты вызывают _queue_tick
+    напрямую, без реального ожидания)."""
+    asyncio.create_task(_queue_processor())
+
+
 # ------------------------------------------------------------- управление
 
 async def pause_campaign(campaign_id: int) -> bool:
@@ -316,7 +377,7 @@ async def cancel_campaign(campaign_id: int) -> bool:
     # задачи нет (или умерла) — переводим статус напрямую
     return db.transition_campaign(
         campaign_id,
-        ("draft", "ready", "paused", "dry_running", "running"),
+        ("draft", "ready", "scheduled", "paused", "dry_running", "running"),
         "cancelled",
     )
 
@@ -376,7 +437,11 @@ async def send_test(campaign_id: int) -> tuple[bool, str]:
 async def resume_on_startup() -> None:
     """Подхват после рестарта контейнера: running-кампании продолжаются
     с pending-остатка, недоделанные dry-run перезапускаются с нуля
-    (кэш членства делает повтор быстрым)."""
+    (кэш членства делает повтор быстрым). Также фиксирует момент старта
+    процесса — кампании, запланированные на время раньше этого момента,
+    фоновая очередь не подхватывает автоматически (см. _queue_tick)."""
+    global _process_start_time
+    _process_start_time = db.now()
     for campaign in db.campaigns_in_status(("running",)):
         cid = campaign["id"]
         n = db.reconcile_sending(cid)

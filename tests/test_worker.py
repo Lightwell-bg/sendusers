@@ -20,10 +20,12 @@ def clean_worker_state():
     worker._tasks.clear()
     worker._control.clear()
     worker._notes.clear()
+    worker._process_start_time = ""
     yield
     worker._tasks.clear()
     worker._control.clear()
     worker._notes.clear()
+    worker._process_start_time = ""
 
 
 async def wait_campaign_task(campaign_id: int) -> None:
@@ -41,6 +43,17 @@ def statuses_map(campaign_id: int) -> dict[tuple[str, int], str]:
         (r["bot"], r["user_id"]): r["status"]
         for r in db.all_recipients(campaign_id)
     }
+
+
+async def start_send_via_queue(campaign_id: int) -> None:
+    """То же, что нажатие «Подтвердить отправку»/«Продолжить» плюс один тик
+    обработчика очереди — так это происходит в проде (send_now ставит в
+    очередь, фоновый цикл её вычитывает). Раньше тесты вызывали
+    worker.start_send() напрямую; теперь start_send — внутренняя функция,
+    вызывается только из _queue_tick."""
+    ok = await worker.send_now(campaign_id)
+    assert ok, f"не удалось поставить кампанию {campaign_id} в очередь"
+    await worker._queue_tick()
 
 
 # ------------------------------------------------------------------ dry-run
@@ -184,7 +197,7 @@ async def test_send_happy_path_both_bots(monkeypatch):
     cid = await prepared_campaign(monkeypatch, bots="A,B")
     monkeypatch.setattr(worker.telegram, "send_message", fake_send)
 
-    assert await worker.start_send(cid)
+    await start_send_via_queue(cid)
     await wait_campaign_task(cid)
 
     campaign = db.get_campaign(cid)
@@ -205,7 +218,7 @@ async def test_send_forbidden_marks_blocked_forever(monkeypatch):
     cid = await prepared_campaign(monkeypatch, bots="A")
     monkeypatch.setattr(worker.telegram, "send_message", fake_send)
 
-    assert await worker.start_send(cid)
+    await start_send_via_queue(cid)
     await wait_campaign_task(cid)
 
     st = statuses_map(cid)
@@ -229,7 +242,7 @@ async def test_send_retry_after_no_duplicates(monkeypatch):
     cid = await prepared_campaign(monkeypatch, bots="A")
     monkeypatch.setattr(worker.telegram, "send_message", fake_send)
 
-    assert await worker.start_send(cid)
+    await start_send_via_queue(cid)
     await wait_campaign_task(cid)
 
     st = statuses_map(cid)
@@ -247,7 +260,7 @@ async def test_send_parse_error_pauses_whole_campaign(monkeypatch):
     cid = await prepared_campaign(monkeypatch, bots="A", parse_mode="HTML")
     monkeypatch.setattr(worker.telegram, "send_message", fake_send)
 
-    assert await worker.start_send(cid)
+    await start_send_via_queue(cid)
     await wait_campaign_task(cid)
 
     campaign = db.get_campaign(cid)
@@ -265,7 +278,7 @@ async def test_send_per_user_error_continues(monkeypatch):
     cid = await prepared_campaign(monkeypatch, bots="A")
     monkeypatch.setattr(worker.telegram, "send_message", fake_send)
 
-    assert await worker.start_send(cid)
+    await start_send_via_queue(cid)
     await wait_campaign_task(cid)
 
     st = statuses_map(cid)
@@ -284,9 +297,9 @@ async def test_double_start_rejected(monkeypatch):
     cid = await prepared_campaign(monkeypatch, bots="A")
     monkeypatch.setattr(worker.telegram, "send_message", slow_send)
 
-    assert await worker.start_send(cid)
+    await start_send_via_queue(cid)
     await started.wait()
-    assert not await worker.start_send(cid)  # второй запуск отбит
+    assert not await worker.send_now(cid)  # второй запуск отбит
     await wait_campaign_task(cid)
     assert db.get_campaign(cid)["status"] == "done"
 
@@ -302,7 +315,7 @@ async def test_cancel_during_send(monkeypatch):
     cid = await prepared_campaign(monkeypatch, bots="A")
     monkeypatch.setattr(worker.telegram, "send_message", slow_send)
 
-    assert await worker.start_send(cid)
+    await start_send_via_queue(cid)
     await asyncio.sleep(0.05)  # первая отправка в полёте
     assert await worker.cancel_campaign(cid)
     await wait_campaign_task(cid)
@@ -326,9 +339,101 @@ async def test_empty_audience_finishes_immediately(monkeypatch):
     cid = make_campaign(bots="A")
     assert await worker.start_dry_run(cid)
     await wait_campaign_task(cid)
-    assert await worker.start_send(cid)
+    await start_send_via_queue(cid)
     await wait_campaign_task(cid)
     assert db.get_campaign(cid)["status"] == "done"
+
+
+# ----------------------------------------------------------------- очередь
+
+async def test_queue_serializes_two_scheduled_campaigns(monkeypatch):
+    """Две кампании готовы к отправке — вторая не стартует, пока не
+    закончится первая, даже если обе давно due."""
+    sent = []
+
+    async def fake_send(token, chat_id, text, parse_mode=""):
+        sent.append(chat_id)
+
+    cid1 = await prepared_campaign(monkeypatch, bots="A")
+    cid2 = await prepared_campaign(monkeypatch, bots="A")
+    monkeypatch.setattr(worker.telegram, "send_message", fake_send)
+
+    assert await worker.send_now(cid1)
+    assert await worker.send_now(cid2)
+
+    await worker._queue_tick()  # запускает cid1 (создан раньше -> меньше id)
+    assert db.get_campaign(cid1)["status"] == "running"
+    assert db.get_campaign(cid2)["status"] == "scheduled"
+
+    await worker._queue_tick()  # cid1 всё ещё занимает очередь
+    assert db.get_campaign(cid2)["status"] == "scheduled"
+
+    await wait_campaign_task(cid1)
+    assert db.get_campaign(cid1)["status"] == "done"
+
+    await worker._queue_tick()  # очередь свободна -> стартует cid2
+    await wait_campaign_task(cid2)
+    assert db.get_campaign(cid2)["status"] == "done"
+
+
+async def test_scheduled_before_boot_not_auto_started(monkeypatch):
+    """Кампания, запланированная на время до старта процесса (сервис был
+    выключен) — не стартует сама, ждёт ручного решения администратора."""
+    cid = await prepared_campaign(monkeypatch, bots="A")
+    assert db.schedule_campaign(cid, "2000-01-01 00:00:00", ("ready",))
+
+    await worker.resume_on_startup()  # фиксирует _process_start_time = сейчас
+    await worker._queue_tick()
+
+    assert db.get_campaign(cid)["status"] == "scheduled"
+
+
+async def test_resume_paused_campaign_goes_through_queue(monkeypatch):
+    """«Продолжить» после паузы идёт через очередь (paused -> scheduled ->
+    running), а не переводит в running напрямую в обход сериализации."""
+    async def bad_parse(token, chat_id, text, parse_mode=""):
+        raise BadRequest("Bad Request: can't parse entities: unclosed tag")
+
+    cid = await prepared_campaign(monkeypatch, bots="A", parse_mode="HTML")
+    monkeypatch.setattr(worker.telegram, "send_message", bad_parse)
+    await start_send_via_queue(cid)
+    await wait_campaign_task(cid)  # дождаться, пока фоновая задача дойдёт до паузы
+    assert db.get_campaign(cid)["status"] == "paused"
+
+    async def ok_send(token, chat_id, text, parse_mode=""):
+        pass
+
+    monkeypatch.setattr(worker.telegram, "send_message", ok_send)
+    assert await worker.send_now(cid)
+    assert db.get_campaign(cid)["status"] == "scheduled"  # не running сразу
+
+    await worker._queue_tick()
+    await wait_campaign_task(cid)
+    assert db.get_campaign(cid)["status"] == "done"
+
+
+async def test_schedule_and_unschedule_campaign(monkeypatch):
+    cid = await prepared_campaign(monkeypatch, bots="A")
+    future = "2099-01-01 00:00:00"
+
+    assert await worker.schedule_campaign(cid, future)
+    row = db.get_campaign(cid)
+    assert row["status"] == "scheduled"
+    assert row["scheduled_at"] == future
+
+    assert await worker.unschedule_campaign(cid)
+    row = db.get_campaign(cid)
+    assert row["status"] == "ready"
+    assert row["scheduled_at"] is None
+
+
+async def test_cancel_scheduled_campaign(monkeypatch):
+    cid = await prepared_campaign(monkeypatch, bots="A")
+    assert await worker.schedule_campaign(cid, "2099-01-01 00:00:00")
+
+    assert await worker.cancel_campaign(cid)
+
+    assert db.get_campaign(cid)["status"] == "cancelled"
 
 
 # ------------------------------------------------------------ возобновление
@@ -373,7 +478,7 @@ async def test_send_transient_error_retried(monkeypatch):
     cid = await prepared_campaign(monkeypatch, bots="A")
     monkeypatch.setattr(worker.telegram, "send_message", flaky_send)
 
-    assert await worker.start_send(cid)
+    await start_send_via_queue(cid)
     await wait_campaign_task(cid)
 
     st = statuses_map(cid)
@@ -391,7 +496,7 @@ async def test_send_transient_error_exhausted(monkeypatch):
     cid = await prepared_campaign(monkeypatch, bots="A")
     monkeypatch.setattr(worker.telegram, "send_message", broken_send)
 
-    assert await worker.start_send(cid)
+    await start_send_via_queue(cid)
     await wait_campaign_task(cid)
 
     st = statuses_map(cid)
@@ -412,7 +517,7 @@ async def test_forbidden_permanent_only_for_real_blocks(monkeypatch):
     cid = await prepared_campaign(monkeypatch, bots="A")
     monkeypatch.setattr(worker.telegram, "send_message", fake_send)
 
-    assert await worker.start_send(cid)
+    await start_send_via_queue(cid)
     await wait_campaign_task(cid)
 
     st = statuses_map(cid)
@@ -454,7 +559,7 @@ async def test_send_with_image_uploads_once_then_reuses_file_id(monkeypatch, tmp
     monkeypatch.setattr(worker.telegram, "send_photo", fake_send_photo)
     monkeypatch.setattr(worker.telegram, "send_message", must_not_send_message)
 
-    assert await worker.start_send(cid)
+    await start_send_via_queue(cid)
     await wait_campaign_task(cid)
 
     assert db.get_campaign(cid)["status"] == "done"
@@ -479,7 +584,7 @@ async def test_send_with_missing_image_pauses_without_burning(monkeypatch):
 
     monkeypatch.setattr(worker.telegram, "send_photo", fake_send_photo)
 
-    assert await worker.start_send(cid)
+    await start_send_via_queue(cid)
     await wait_campaign_task(cid)
 
     assert db.get_campaign(cid)["status"] == "paused"

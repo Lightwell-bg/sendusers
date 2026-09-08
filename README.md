@@ -86,6 +86,7 @@ README_broadcast.md  # инструкция по деплою на VPS
 | `COOKIE_SECURE` | Secure-флаг сессионной cookie | `0` при доступе через SSH-туннель, `1` — если админка за HTTPS |
 | `LOG_LEVEL` | Уровень логирования | По умолчанию `INFO` — нужен, чтобы прогресс кампаний и resume после рестарта были видны в `docker compose logs` |
 | `MEMBERSHIP_CHECK_CONCURRENCY` | Сколько получателей проверять на членство в exclude-чатах одновременно во время dry-run | По умолчанию `5` |
+| `QUEUE_TICK_SECONDS` | Период проверки очереди отправки, сек | По умолчанию `5` |
 
 Документация Telegram Bot API: https://core.telegram.org/bots/api
 
