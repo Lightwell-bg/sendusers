@@ -549,6 +549,7 @@ async def test_resume_paused_campaign_goes_through_queue(monkeypatch):
     cid = await prepared_campaign(monkeypatch, bots="A", parse_mode="HTML")
     monkeypatch.setattr(worker.telegram, "send_message", bad_parse)
     await start_send_via_queue(cid)
+    await wait_campaign_task(cid)  # дождаться, пока _run_send реально пометит паузу
     assert db.get_campaign(cid)["status"] == "paused"
 
     async def ok_send(token, chat_id, text, parse_mode=""):
@@ -909,9 +910,16 @@ def test_cancel_scheduled_campaign_via_http(monkeypatch):
 Run: `python -m pytest tests/test_routes_main.py -k "schedule or unschedule or cancel_scheduled" -v`
 Expected: FAIL — `404 Not Found` на `/campaigns/{id}/schedule` (роута ещё нет).
 
-- [ ] **Step 3: STATUS_LABELS/STATUS_CLASS/POLLING_STATUSES**
+- [ ] **Step 3: STATUS_LABELS/STATUS_CLASS**
 
-В `app/main.py` заменить блок (строки 58-86):
+(Task 2's implementer already added `"scheduled"` to `POLLING_STATUSES` and
+wired `worker.start_queue_processor()` into `lifespan` — both turned out to
+be needed there too, to keep the pre-existing HTTP lifecycle test green
+through Task 2's own regression run. Nothing to do for either here.)
+
+В `app/main.py` заменить блок `STATUS_LABELS`/`STATUS_CLASS` (текущие строки
+58-77 — `RECIPIENT_STATUS_LABELS`/`POLLING_STATUSES` ниже уже в нужном виде,
+не трогать):
 
 ```python
 STATUS_LABELS = {
@@ -936,42 +944,9 @@ STATUS_CLASS = {
     "failed": "badge-red",
     "cancelled": "badge-red",
 }
-RECIPIENT_STATUS_LABELS = {
-    "pending": "В очереди",
-    "sending": "Отправляется",
-    "sent": "Отправлено",
-    "skipped_member": "Пропущен (участник исключённого чата)",
-    "blocked": "Заблокировал бота",
-    "error": "Ошибка",
-}
-POLLING_STATUSES = ("dry_running", "running", "scheduled")
 ```
 
-(Добавление `"scheduled"` в `POLLING_STATUSES` — карточка кампании и статус-панель
-автоматически продолжат опрашивать `/status`, пока фоновый обработчик не заберёт
-кампанию в работу; без этого админу пришлось бы обновлять страницу вручную.)
-
-- [ ] **Step 4: Запустить фоновый обработчик очереди при старте приложения**
-
-В `app/main.py` заменить `lifespan` (строки 96-104):
-
-```python
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    db.init_db()
-    Path(settings.uploads_dir).mkdir(parents=True, exist_ok=True)
-    from . import worker  # локальный импорт: модуль появится позже
-
-    await worker.resume_on_startup()
-    worker.start_queue_processor()
-    yield
-    db.close_db()
-```
-
-(Роут `/send` уже переключён на `worker.send_now` в Task 2, Step 16 — здесь
-трогать его не нужно.)
-
-- [ ] **Step 5: Новые роуты `/schedule`, `/unschedule`, `/queue`**
+- [ ] **Step 4: Новые роуты `/schedule`, `/unschedule`, `/queue`**
 
 В `app/main.py` вставить после роута `campaign_send` (после строки 437, перед
 `@app.post("/campaigns/{campaign_id}/cancel", ...)`):
@@ -1015,7 +990,7 @@ async def queue(request: Request):
     )
 ```
 
-- [ ] **Step 6: JS-конвертация локального времени в UTC перед отправкой формы**
+- [ ] **Step 5: JS-конвертация локального времени в UTC перед отправкой формы**
 
 Создать `app/static/schedule.js`:
 
@@ -1051,7 +1026,7 @@ async def queue(request: Request):
 })();
 ```
 
-- [ ] **Step 7: Ссылка «Очередь» в навигации**
+- [ ] **Step 6: Ссылка «Очередь» в навигации**
 
 В `app/templates/base.html` заменить строку `<a href="/history">История</a>`:
 
@@ -1060,7 +1035,7 @@ async def queue(request: Request):
         <a href="/queue">Очередь</a>
 ```
 
-- [ ] **Step 8: Карточка кампании — форма планирования и ветка `scheduled`**
+- [ ] **Step 7: Карточка кампании — форма планирования и ветка `scheduled`**
 
 В `app/templates/campaign_detail.html` заменить ветку `{% if campaign.status == 'draft' %}`
 (добавить форму планирования сразу после кнопки «Тест себе», перед ссылкой
@@ -1163,7 +1138,7 @@ async def queue(request: Request):
 {% endblock %}
 ```
 
-- [ ] **Step 9: Создать страницу «Очередь»**
+- [ ] **Step 8: Создать страницу «Очередь»**
 
 Создать `app/templates/queue.html`:
 
@@ -1226,12 +1201,12 @@ async def queue(request: Request):
 {% endblock %}
 ```
 
-- [ ] **Step 10: Прогнать новые тесты**
+- [ ] **Step 9: Прогнать новые тесты**
 
 Run: `python -m pytest tests/test_routes_main.py -v`
 Expected: PASS.
 
-- [ ] **Step 11: Прогнать весь набор тестов (регрессия)**
+- [ ] **Step 10: Прогнать весь набор тестов (регрессия)**
 
 Run: `python -m pytest tests/ -q`
 Expected: PASS (85 из Task 2 + 3 новых = 88 passed). Особо проверить, что
@@ -1239,7 +1214,7 @@ Expected: PASS (85 из Task 2 + 3 новых = 88 passed). Особо пров�
 задействует фоновый обработчик очереди через `QUEUE_TICK_SECONDS=0.05` из
 `tests/conftest.py`).
 
-- [ ] **Step 12: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add app/main.py app/templates/base.html app/templates/campaign_detail.html \
