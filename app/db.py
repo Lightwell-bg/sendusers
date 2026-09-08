@@ -23,7 +23,7 @@ from .config import settings
 
 # --- статусы кампании ---
 CAMPAIGN_STATUSES = (
-    "draft", "dry_running", "ready", "running", "paused",
+    "draft", "dry_running", "ready", "scheduled", "running", "paused",
     "done", "failed", "cancelled",
 )
 # --- статусы получателя ---
@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
     bots          TEXT NOT NULL,                -- 'A' | 'B' | 'A,B'
     image_path    TEXT,                         -- путь к картинке (sendPhoto) или NULL
     status        TEXT NOT NULL DEFAULT 'draft',
+    scheduled_at  TEXT,                         -- время запланированной отправки (UTC) или NULL
     created_at    TEXT NOT NULL,
     dry_run_at    TEXT,
     started_at    TEXT,
@@ -83,6 +84,13 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def now() -> str:
+    """Публичная обёртка над _now() — нужна вызывающим за пределами этого
+    модуля (worker.py), чтобы сравнивать время с scheduled_at в том же
+    формате, не дублируя форматирование."""
+    return _now()
+
+
 def get_conn() -> sqlite3.Connection:
     global _conn
     if _conn is None:
@@ -109,6 +117,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(campaigns)")}
     if "image_path" not in cols:
         conn.execute("ALTER TABLE campaigns ADD COLUMN image_path TEXT")
+    if "scheduled_at" not in cols:
+        conn.execute("ALTER TABLE campaigns ADD COLUMN scheduled_at TEXT")
 
 
 def close_db() -> None:
@@ -383,3 +393,52 @@ def dashboard_stats() -> dict[str, dict[str, int]]:
         "SELECT bot, COUNT(*) AS n FROM blocked_users GROUP BY bot"
     ).fetchall()
     return {r["bot"]: {"blocked": r["n"]} for r in rows}
+
+
+# ------------------------------------------------------------- планирование
+
+def schedule_campaign(campaign_id: int, scheduled_at: str, from_statuses: Iterable[str]) -> bool:
+    """Атомарно ставит статус 'scheduled' и время отправки. Один и тот же
+    вызов используется и для первой постановки в расписание (from_statuses
+    содержит 'ready'), и для смены времени у уже запланированной
+    (from_statuses = ('scheduled',)), и для немедленной отправки — тогда
+    scheduled_at = now() и from_statuses включает 'ready'/'paused'."""
+    placeholders = ",".join("?" for _ in from_statuses)
+    with _lock:
+        cur = get_conn().execute(
+            f"UPDATE campaigns SET status='scheduled', scheduled_at=?"
+            f" WHERE id=? AND status IN ({placeholders})",
+            [scheduled_at, campaign_id, *from_statuses],
+        )
+        get_conn().commit()
+        return cur.rowcount == 1
+
+
+def unschedule_campaign(campaign_id: int) -> bool:
+    with _lock:
+        cur = get_conn().execute(
+            "UPDATE campaigns SET status='ready', scheduled_at=NULL"
+            " WHERE id=? AND status='scheduled'",
+            (campaign_id,),
+        )
+        get_conn().commit()
+        return cur.rowcount == 1
+
+
+def next_due_scheduled_campaign(now: str, process_start: str) -> Optional[sqlite3.Row]:
+    """Самая ранняя кампания в 'scheduled', чьё время уже настало (<=now)
+    и наступило не раньше старта текущего процесса (>=process_start) —
+    вторым условием просроченные ещё до рестарта кампании не подхватываются
+    автоматически (см. спеку)."""
+    return get_conn().execute(
+        "SELECT * FROM campaigns WHERE status='scheduled' AND scheduled_at<=? AND scheduled_at>=?"
+        " ORDER BY scheduled_at ASC, id ASC LIMIT 1",
+        (now, process_start),
+    ).fetchone()
+
+
+def scheduled_campaigns() -> list[sqlite3.Row]:
+    """Все запланированные кампании для страницы «Очередь», по порядку отправки."""
+    return get_conn().execute(
+        "SELECT * FROM campaigns WHERE status='scheduled' ORDER BY scheduled_at ASC, id ASC"
+    ).fetchall()

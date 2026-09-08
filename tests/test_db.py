@@ -182,6 +182,134 @@ def test_list_campaigns_without_limit_returns_all():
     assert len(db.list_campaigns()) == 3
 
 
+def test_migrate_adds_scheduled_at_to_old_db(tmp_path):
+    import sqlite3
+
+    p = tmp_path / "old2.db"
+    conn = sqlite3.connect(p)
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        "CREATE TABLE campaigns (id INTEGER PRIMARY KEY, title TEXT, bots TEXT)"
+    )
+    conn.commit()
+    db._migrate(conn)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(campaigns)")}
+    assert "scheduled_at" in cols
+    db._migrate(conn)  # идемпотентно, без ошибки
+    conn.close()
+
+
+def test_schedule_campaign_sets_status_and_time():
+    cid = db.create_campaign("T", "M", "HTML", "A")
+    db.transition_campaign(cid, ["draft"], "dry_running")
+    db.transition_campaign(cid, ["dry_running"], "ready")
+
+    ok = db.schedule_campaign(cid, "2099-01-01 12:00:00", ("ready",))
+
+    assert ok is True
+    row = db.get_campaign(cid)
+    assert row["status"] == "scheduled"
+    assert row["scheduled_at"] == "2099-01-01 12:00:00"
+
+
+def test_schedule_campaign_rejected_from_wrong_status():
+    cid = db.create_campaign("T", "M", "HTML", "A")  # статус draft
+    ok = db.schedule_campaign(cid, "2099-01-01 12:00:00", ("ready",))
+    assert ok is False
+    assert db.get_campaign(cid)["status"] == "draft"
+
+
+def test_schedule_campaign_reschedule_updates_time():
+    """Смена времени у уже запланированной — тот же вызов, from_statuses=('scheduled',)."""
+    cid = db.create_campaign("T", "M", "HTML", "A")
+    db.transition_campaign(cid, ["draft"], "dry_running")
+    db.transition_campaign(cid, ["dry_running"], "ready")
+    db.schedule_campaign(cid, "2099-01-01 12:00:00", ("ready",))
+
+    ok = db.schedule_campaign(cid, "2099-06-01 08:00:00", ("scheduled",))
+
+    assert ok is True
+    row = db.get_campaign(cid)
+    assert row["status"] == "scheduled"
+    assert row["scheduled_at"] == "2099-06-01 08:00:00"
+
+
+def test_unschedule_campaign_returns_to_ready():
+    cid = db.create_campaign("T", "M", "HTML", "A")
+    db.transition_campaign(cid, ["draft"], "dry_running")
+    db.transition_campaign(cid, ["dry_running"], "ready")
+    db.schedule_campaign(cid, "2099-01-01 12:00:00", ("ready",))
+
+    ok = db.unschedule_campaign(cid)
+
+    assert ok is True
+    row = db.get_campaign(cid)
+    assert row["status"] == "ready"
+    assert row["scheduled_at"] is None
+
+
+def test_unschedule_campaign_rejected_when_not_scheduled():
+    cid = db.create_campaign("T", "M", "HTML", "A")  # статус draft, не scheduled
+    assert db.unschedule_campaign(cid) is False
+
+
+def test_next_due_scheduled_campaign_respects_time_window():
+    """Готова только та, чьё время уже настало И наступило не раньше старта процесса."""
+    cid_due = db.create_campaign("Due", "M", "HTML", "A")
+    db.transition_campaign(cid_due, ["draft"], "dry_running")
+    db.transition_campaign(cid_due, ["dry_running"], "ready")
+    db.schedule_campaign(cid_due, "2020-01-01 00:00:00", ("ready",))
+
+    cid_future = db.create_campaign("Future", "M", "HTML", "A")
+    db.transition_campaign(cid_future, ["draft"], "dry_running")
+    db.transition_campaign(cid_future, ["dry_running"], "ready")
+    db.schedule_campaign(cid_future, "2099-01-01 00:00:00", ("ready",))  # ещё не наступило
+
+    cid_before_boot = db.create_campaign("BeforeBoot", "M", "HTML", "A")
+    db.transition_campaign(cid_before_boot, ["draft"], "dry_running")
+    db.transition_campaign(cid_before_boot, ["dry_running"], "ready")
+    db.schedule_campaign(cid_before_boot, "1999-01-01 00:00:00", ("ready",))  # до старта процесса
+
+    now = "2025-06-01 00:00:00"
+    process_start = "2010-01-01 00:00:00"
+
+    row = db.next_due_scheduled_campaign(now, process_start)
+
+    assert row["id"] == cid_due
+
+
+def test_next_due_scheduled_campaign_orders_by_time_then_id():
+    cid_a = db.create_campaign("A", "M", "HTML", "A")
+    db.transition_campaign(cid_a, ["draft"], "dry_running")
+    db.transition_campaign(cid_a, ["dry_running"], "ready")
+    db.schedule_campaign(cid_a, "2020-01-01 10:00:00", ("ready",))
+
+    cid_b = db.create_campaign("B", "M", "HTML", "A")
+    db.transition_campaign(cid_b, ["draft"], "dry_running")
+    db.transition_campaign(cid_b, ["dry_running"], "ready")
+    db.schedule_campaign(cid_b, "2020-01-01 09:00:00", ("ready",))  # раньше по времени
+
+    row = db.next_due_scheduled_campaign("2025-01-01 00:00:00", "2010-01-01 00:00:00")
+
+    assert row["id"] == cid_b
+
+
+def test_scheduled_campaigns_lists_all_sorted():
+    cid_a = db.create_campaign("A", "M", "HTML", "A")
+    db.transition_campaign(cid_a, ["draft"], "dry_running")
+    db.transition_campaign(cid_a, ["dry_running"], "ready")
+    db.schedule_campaign(cid_a, "2020-01-01 10:00:00", ("ready",))
+
+    cid_b = db.create_campaign("B", "M", "HTML", "A")
+    db.transition_campaign(cid_b, ["draft"], "dry_running")
+    db.transition_campaign(cid_b, ["dry_running"], "ready")
+    db.schedule_campaign(cid_b, "2020-01-01 09:00:00", ("ready",))
+
+    rows = db.scheduled_campaigns()
+
+    assert [r["id"] for r in rows] == [cid_b, cid_a]
+
+
 def test_migrate_adds_image_path_to_old_db(tmp_path):
     import sqlite3
 
