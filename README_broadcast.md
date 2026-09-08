@@ -11,68 +11,60 @@
 базы рассылок:
 
 ```bash
-ssh root@64.23.190.210
+ssh vlad@<VPS>
 mkdir -p ~/backups/$(date +%Y-%m-%d)
-cp /opt/bginfobot/data/bot_data.sqlite ~/backups/$(date +%Y-%m-%d)/
-cp /opt/bginfoai/chat_logs.db          ~/backups/$(date +%Y-%m-%d)/
-cp /opt/broadcast-admin/data/broadcast.db ~/backups/$(date +%Y-%m-%d)/ 2>/dev/null || true
+sudo cp /opt/bginfobot/data/bot_data.sqlite      ~/backups/$(date +%Y-%m-%d)/
+sudo cp /opt/bginfoai/data/chat_logs.db          ~/backups/$(date +%Y-%m-%d)/
+sudo cp /opt/broadcast-admin/data/broadcast.db   ~/backups/$(date +%Y-%m-%d)/ 2>/dev/null || true
 ```
 
-## 2. Проверить, примонтирована ли `chat_logs.db` бота B на хост
+## 2. Проверить путь к данным бота B на хосте
+
+Оба бота теперь хранят базу в отдельном каталоге `data/` (не рядом с `.env`),
+поэтому монтируем обе базы **каталогом целиком** — это заодно решает проблему
+с WAL-режимом SQLite: файлы `chat_logs.db-wal`/`chat_logs.db-shm` (если бот B
+их создаёт) лежат рядом с `chat_logs.db` в той же `data/` и подхватываются
+автоматически. Точечный маунт одного файла (как было раньше, когда `chat_logs.db`
+лежал прямо в корне проекта бота B) их не видит — с этим связана ошибка
+`disk I/O error` на дашборде, если она у вас возникала.
 
 ```bash
 docker inspect bginfoai --format '{{ json .Mounts }}' | jq
 ```
 
-- На этом сервере уже примонтирован: `bginfoai/docker-compose.yml` содержит
-  `./chat_logs.db:/app/chat_logs.db`, реальный файл — `/opt/bginfoai/chat_logs.db`.
-  Используйте этот путь как `BOT_B_DB_HOST_PATH` (шаг 3). **Важно**: `chat_logs.db`
-  лежит прямо в корне `/opt/bginfoai`, рядом с исходным кодом и `.env` бота B
-  (там его Telegram-токен и, возможно, токены VK) — монтируем только этот файл,
-  а не всю папку `/opt/bginfoai`, иначе секреты бота B станут видны внутри
-  контейнера broadcast-admin.
-- Если на другом окружении файл существует только внутри контейнера (нет
-  хостового пути) — **сначала** добавьте volume в `docker-compose.yml` бота B,
-  например:
-  ```yaml
-  volumes:
-    - ./data/chat_logs.db:/app/chat_logs.db
-  ```
-  затем `docker compose up -d` для бота B, чтобы файл появился на хосте, и
-  только после этого продолжайте деплой админки.
-- Обе базы (`bot_data.sqlite` и `chat_logs.db`) на момент проверки не используют
-  WAL-режим — рядом нет `-wal`/`-shm`/`-journal` файлов в состоянии покоя,
-  поэтому точечный маунт одного файла для B безопасен и достаточен.
+- На этом сервере база бота B — `/opt/bginfoai/data/chat_logs.db`. Используйте
+  `/opt/bginfoai/data` как `BOT_B_DATA_DIR` (шаг 3). **Важно**: монтируем именно
+  `data/`, а не весь `/opt/bginfoai` — рядом с кодом там лежит `.env` бота B
+  с его токенами, ему не место внутри контейнера broadcast-admin.
+- Если на другом окружении `data/` бота B существует только внутри его
+  контейнера (нет хостового пути) — **сначала** добавьте volume в
+  `docker-compose.yml` бота B, пересоздайте его контейнер, и только после
+  этого продолжайте деплой админки.
 
-## 3. Скопировать проект и заполнить `.env`
+## 3. Обновить проект и заполнить `.env`
 
-Проект пока не выложен в git-репозиторий — переносить с локальной машины
-через `scp`/`rsync`, аналогично соседям в `/opt` (`bginfobot`, `bginfoai`):
+Проект в git (GitHub: `Lightwell-bg/sendusers`). Первый раз на сервере —
+перевести существующую папку на git (подробности и права — см. историю
+переписки/памяти проекта), дальше просто:
 
 ```bash
-# с локальной машины (Windows, PowerShell/Git Bash):
-scp -r d:/1PythonProjects/20260706SendUser/sendusers root@64.23.190.210:/opt/broadcast-admin
-
-# на сервере:
-ssh root@64.23.190.210
+ssh vlad@<VPS>
 cd /opt/broadcast-admin
-cp .env.example .env
+git pull
+cp .env.example .env   # только при самом первом разе — дальше сверять новые переменные
 nano .env
 ```
-
-Если позже заведёте git-репозиторий — можно будет обновлять через
-`git pull` вместо повторного `scp`.
 
 Заполнить как минимум: `TELEGRAM_BOT_TOKEN_A`, `TELEGRAM_BOT_TOKEN_B`,
 `ADMIN_PASSWORD`, `SECRET_KEY` (`openssl rand -hex 32`), `ADMIN_CHAT_ID`,
 `BOT_A_DB_PATH`/`BOT_B_DB_PATH` (пути **внутри контейнера**, см. `docker-compose.yml`).
 
 Также задать в `.env` хостовые пути к базам ботов (docker compose подхватывает
-переменные из `.env` в той же папке) — маунты асимметричны:
+переменные из `.env` в той же папке) — маунты симметричны, оба каталогами:
 
 ```
-BOT_A_DATA_DIR=/opt/bginfobot/data          # каталог — там только bot_data.sqlite
-BOT_B_DB_HOST_PATH=/opt/bginfoai/chat_logs.db   # один файл — рядом код и .env бота B
+BOT_A_DATA_DIR=/opt/bginfobot/data
+BOT_B_DATA_DIR=/opt/bginfoai/data
 ```
 
 И порт на хосте (внутри контейнера всегда 8080, см. `Dockerfile`) — на этом VPS
@@ -115,7 +107,7 @@ curl -s http://127.0.0.1:${HOST_PORT:-8090}/health   # {"status": "ok"}
 машины проброс:
 
 ```bash
-ssh -L 8090:127.0.0.1:8090 root@64.23.190.210
+ssh -L 8090:127.0.0.1:8090 vlad@<VPS>
 ```
 
 Затем открыть в браузере: http://127.0.0.1:8090
