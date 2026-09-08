@@ -27,6 +27,7 @@
 services:
   broadcast-admin:
     build: .
+    container_name: broadcast-admin
     env_file: .env
     ports:
       - "${BIND_ADDR:-127.0.0.1}:${HOST_PORT:-8090}:8080"
