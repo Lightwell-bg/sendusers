@@ -31,6 +31,13 @@
     surround("<" + tag + ">", "</" + tag + ">");
   }
 
+  // Экранирует кавычки/амперсанд в значении атрибута href — иначе URL с
+  // кавычкой ломает тег, и итоговый HTML в таком виде уходит в Telegram
+  // всем получателям кампании.
+  function escapeAttr(s) {
+    return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+  }
+
   function insertLink() {
     var start = textarea.selectionStart;
     var end = textarea.selectionEnd;
@@ -40,7 +47,7 @@
     var text = selected || window.prompt("Текст ссылки:", "") || url;
     var start0 = textarea.value.slice(0, start);
     var rest = textarea.value.slice(end);
-    var anchor = '<a href="' + url + '">' + text + "</a>";
+    var anchor = '<a href="' + escapeAttr(url) + '">' + text + "</a>";
     textarea.value = start0 + anchor + rest;
     textarea.selectionStart = textarea.selectionEnd = start + anchor.length;
     textarea.focus();

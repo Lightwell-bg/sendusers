@@ -15,7 +15,7 @@ import hmac
 import logging
 import secrets
 import time
-from collections import deque
+from collections import defaultdict, deque
 
 from fastapi import HTTPException, Request, Response
 from itsdangerous import BadSignature, SignatureExpired, TimestampSigner
@@ -28,25 +28,36 @@ SESSION_COOKIE = "session"
 SESSION_MAX_AGE = 12 * 60 * 60  # 12 часов в секундах
 
 # Защита от перебора пароля: не больше LOGIN_MAX_FAILURES неудачных попыток
-# за LOGIN_WINDOW секунд (глобально — админ один, сервис за SSH-туннелем).
+# за LOGIN_WINDOW секунд — счётчик отдельный на каждый IP, чтобы кто угодно
+# не мог намеренно "заспамить" /login чужим неверным паролем и залочить
+# настоящего админа (актуально при BIND_ADDR=0.0.0.0, когда порт смотрит
+# в интернет напрямую).
 LOGIN_MAX_FAILURES = 5
 LOGIN_WINDOW = 300.0
-_failed_logins: deque[float] = deque()
+_failed_logins: dict[str, deque[float]] = defaultdict(deque)
 
 _signer = TimestampSigner(settings.secret_key)
 
 
-def login_allowed() -> bool:
+def _prune(client_ip: str) -> deque[float]:
+    q = _failed_logins[client_ip]
     now = time.monotonic()
-    while _failed_logins and now - _failed_logins[0] > LOGIN_WINDOW:
-        _failed_logins.popleft()
-    return len(_failed_logins) < LOGIN_MAX_FAILURES
+    while q and now - q[0] > LOGIN_WINDOW:
+        q.popleft()
+    if not q:
+        _failed_logins.pop(client_ip, None)
+    return q
 
 
-def register_failed_login() -> None:
-    _failed_logins.append(time.monotonic())
-    logger.warning("Неудачная попытка входа (%d за последние %d с)",
-                   len(_failed_logins), int(LOGIN_WINDOW))
+def login_allowed(client_ip: str) -> bool:
+    return len(_prune(client_ip)) < LOGIN_MAX_FAILURES
+
+
+def register_failed_login(client_ip: str) -> None:
+    q = _failed_logins[client_ip]
+    q.append(time.monotonic())
+    logger.warning("Неудачная попытка входа с %s (%d за последние %d с)",
+                   client_ip, len(q), int(LOGIN_WINDOW))
 
 
 def check_password(password: str) -> bool:

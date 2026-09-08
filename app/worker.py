@@ -23,7 +23,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
+from pathlib import Path
 from typing import Optional
 
 from . import db, sources, telegram
@@ -115,6 +117,15 @@ async def _is_excluded(bot: str, user_id: int) -> bool:
     return False
 
 
+async def _check_membership_and_mark(campaign_id: int, bot: str, row, sem: asyncio.Semaphore) -> None:
+    async with sem:
+        if _control.get(campaign_id) == "cancel":
+            return
+        if await _is_excluded(bot, row["user_id"]):
+            db.mark_recipient(campaign_id, bot, row["user_id"],
+                              "skipped_member", "участник exclude-чата")
+
+
 # --------------------------------------------------------------- dry-run
 
 async def start_dry_run(campaign_id: int) -> bool:
@@ -141,16 +152,18 @@ async def _run_dry_run(campaign_id: int) -> None:
             if known_blocked:
                 db.mark_recipients_bulk(campaign_id, bot, known_blocked,
                                         "blocked", "ранее заблокировал бота")
-        # 2. Проверка членства в exclude-чатах (один проход по снапшоту)
+        # 2. Проверка членства в exclude-чатах (один проход по снапшоту,
+        # но не строго по одному — иначе на аудиторию в тысячи человек
+        # dry-run растягивается на десятки минут).
         for bot in bots:
             rows = db.pending_recipients(campaign_id, bot, limit=10_000_000)
-            for row in rows:
-                if _control.get(campaign_id) == "cancel":
-                    db.transition_campaign(campaign_id, ("dry_running",), "cancelled")
-                    return
-                if await _is_excluded(bot, row["user_id"]):
-                    db.mark_recipient(campaign_id, bot, row["user_id"],
-                                      "skipped_member", "участник exclude-чата")
+            sem = asyncio.Semaphore(settings.membership_check_concurrency)
+            await asyncio.gather(
+                *(_check_membership_and_mark(campaign_id, bot, row, sem) for row in rows)
+            )
+            if _control.get(campaign_id) == "cancel":
+                db.transition_campaign(campaign_id, ("dry_running",), "cancelled")
+                return
         counters = db.campaign_counters(campaign_id)
         _merge_totals(campaign_id, {"dry_run": counters})
         db.transition_campaign(campaign_id, ("dry_running",), "ready")
@@ -177,12 +190,22 @@ async def _run_send(campaign_id: int) -> None:
     campaign = db.get_campaign(campaign_id)
     bots = [b for b in campaign["bots"].split(",") if b]
     text, parse_mode = campaign["message_text"], campaign["parse_mode"]
+    image_path = campaign["image_path"]
+    # если картинка привязана, но файл пропал — не сжигаем аудиторию,
+    # ставим на паузу с понятной пометкой
+    if image_path and not os.path.exists(image_path):
+        logger.error("Кампания %s: файл картинки не найден: %s", campaign_id, image_path)
+        _merge_totals(campaign_id, {"send_error": f"файл картинки не найден: {image_path}"})
+        db.transition_campaign(campaign_id, ("running",), "paused")
+        return
     # подстраховка: зависшие 'sending' от прошлого падения считаем sent
     db.reconcile_sending(campaign_id)
-    logger.info("Отправка кампании %s (боты: %s)", campaign_id, bots)
+    logger.info("Отправка кампании %s (боты: %s, картинка: %s)",
+                campaign_id, bots, bool(image_path))
     try:
         await asyncio.gather(
-            *(_send_for_bot(campaign_id, bot, text, parse_mode) for bot in bots)
+            *(_send_for_bot(campaign_id, bot, text, parse_mode, image_path)
+              for bot in bots)
         )
         counters = db.campaign_counters(campaign_id)
         note = _notes.pop(campaign_id, None)
@@ -206,11 +229,18 @@ async def _run_send(campaign_id: int) -> None:
 
 
 async def _send_for_bot(campaign_id: int, bot: str, text: str,
-                        parse_mode: str) -> None:
+                        parse_mode: str, image_path: Optional[str] = None) -> None:
     token = settings.bot_tokens[bot]
     interval = settings.send_delay
     # счётчик повторов временных сбоев (сеть, 5xx) по каждому юзеру
     transient_tries: dict[int, int] = {}
+    # file_id картинки для этого бота: первому получателю грузим файл, из
+    # ответа берём file_id и переиспользуем дальше (не перезаливаем каждому).
+    # file_id привязан к боту, поэтому кэш локальный для _send_for_bot.
+    image_bytes: Optional[bytes] = None
+    if image_path:
+        image_bytes = await asyncio.to_thread(Path(image_path).read_bytes)
+    file_id: Optional[str] = None
     while True:
         if _control.get(campaign_id) in ("pause", "cancel"):
             return
@@ -220,7 +250,15 @@ async def _send_for_bot(campaign_id: int, bot: str, text: str,
         user_id = row["user_id"]
         t0 = time.monotonic()
         try:
-            await telegram.send_message(token, user_id, text, parse_mode)
+            if image_path:
+                photo = file_id or (os.path.basename(image_path), image_bytes)
+                new_id = await telegram.send_photo(
+                    token, user_id, photo, caption=text, parse_mode=parse_mode
+                )
+                if new_id and not file_id:
+                    file_id = new_id
+            else:
+                await telegram.send_message(token, user_id, text, parse_mode)
             db.mark_recipient(campaign_id, bot, user_id, "sent")
         except telegram.RetryAfter as e:
             db.mark_recipient(campaign_id, bot, user_id, "pending", "retry_after")
@@ -291,6 +329,12 @@ async def send_test(campaign_id: int) -> tuple[bool, str]:
     campaign = db.get_campaign(campaign_id)
     if campaign is None:
         return False, "кампания не найдена"
+    image_path = campaign["image_path"]
+    if image_path and not os.path.exists(image_path):
+        return False, "файл картинки не найден — перезагрузите изображение"
+    image_bytes: Optional[bytes] = None
+    if image_path:
+        image_bytes = await asyncio.to_thread(Path(image_path).read_bytes)
     results = []
     ok = True
     for bot in campaign["bots"].split(","):
@@ -299,10 +343,18 @@ async def send_test(campaign_id: int) -> tuple[bool, str]:
         label = settings.bot_labels.get(bot, bot)
         for attempt in (1, 2):
             try:
-                await telegram.send_message(
-                    settings.bot_tokens[bot], settings.admin_chat_id,
-                    campaign["message_text"], campaign["parse_mode"],
-                )
+                if image_path:
+                    await telegram.send_photo(
+                        settings.bot_tokens[bot], settings.admin_chat_id,
+                        (os.path.basename(image_path), image_bytes),
+                        caption=campaign["message_text"],
+                        parse_mode=campaign["parse_mode"],
+                    )
+                else:
+                    await telegram.send_message(
+                        settings.bot_tokens[bot], settings.admin_chat_id,
+                        campaign["message_text"], campaign["parse_mode"],
+                    )
                 results.append(f"{label}: отправлено")
                 break
             except telegram.RetryAfter as e:

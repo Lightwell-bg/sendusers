@@ -146,3 +146,54 @@ def test_update_campaign_text_rejected_when_running():
     row = db.get_campaign(cid)
     assert row["title"] == "T"
     assert row["status"] == "running"
+
+
+def test_set_campaign_image_and_get():
+    cid = db.create_campaign("T", "M", "HTML", "A")
+    assert db.get_campaign(cid)["image_path"] is None
+    db.set_campaign_image(cid, "data/uploads/1.png")
+    assert db.get_campaign(cid)["image_path"] == "data/uploads/1.png"
+    db.set_campaign_image(cid, None)
+    assert db.get_campaign(cid)["image_path"] is None
+
+
+def test_update_campaign_text_keeps_image():
+    cid = db.create_campaign("T", "M", "HTML", "A")
+    db.set_campaign_image(cid, "data/uploads/1.png")
+    db.update_campaign_text(cid, "T2", "M2", "HTML", "A")
+    # правка текста не должна терять привязанную картинку
+    assert db.get_campaign(cid)["image_path"] == "data/uploads/1.png"
+
+
+def test_list_campaigns_pagination():
+    ids = [db.create_campaign(f"T{i}", "M", "HTML", "A") for i in range(5)]
+
+    page1 = db.list_campaigns(limit=2, offset=0)
+    page2 = db.list_campaigns(limit=2, offset=2)
+
+    assert [r["id"] for r in page1] == list(reversed(ids))[:2]
+    assert [r["id"] for r in page2] == list(reversed(ids))[2:4]
+    assert db.count_campaigns() == 5
+
+
+def test_list_campaigns_without_limit_returns_all():
+    for i in range(3):
+        db.create_campaign(f"T{i}", "M", "HTML", "A")
+    assert len(db.list_campaigns()) == 3
+
+
+def test_migrate_adds_image_path_to_old_db(tmp_path):
+    import sqlite3
+
+    p = tmp_path / "old.db"
+    conn = sqlite3.connect(p)
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        "CREATE TABLE campaigns (id INTEGER PRIMARY KEY, title TEXT, bots TEXT)"
+    )
+    conn.commit()
+    db._migrate(conn)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(campaigns)")}
+    assert "image_path" in cols
+    db._migrate(conn)  # идемпотентно, без ошибки
+    conn.close()

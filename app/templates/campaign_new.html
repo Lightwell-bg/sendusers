@@ -3,7 +3,7 @@
 {% block content %}
   <h1>{% if campaign %}Редактирование кампании #{{ campaign.id }}{% else %}Новая кампания{% endif %}</h1>
 
-  <form method="post" action="{{ action }}" class="form">
+  <form method="post" action="{{ action }}" class="form" enctype="multipart/form-data">
     <input type="hidden" name="csrf" value="{{ csrf }}">
 
     <label for="title">Название кампании</label>
@@ -22,6 +22,20 @@
     </div>
     <p class="hint" id="editor-hint">Выделите текст и нажмите кнопку — она обернёт его в HTML-тег Telegram.</p>
     <textarea id="message_text" name="message_text" rows="10" required>{{ campaign.message_text if campaign else '' }}</textarea>
+
+    <label for="image">Картинка (необязательно)</label>
+    {% if campaign and campaign.image_path %}
+      <div class="current-image">
+        <img src="/campaigns/{{ campaign.id }}/image" alt="текущая картинка">
+        <label class="checkbox-label">
+          <input type="checkbox" name="remove_image" value="1"> Удалить текущую картинку
+        </label>
+      </div>
+    {% endif %}
+    <input type="file" id="image" name="image" accept="image/png,image/jpeg,image/gif,image/webp">
+    <p class="hint">JPG/PNG/GIF/WebP, до 10 МБ. С картинкой текст становится подписью —
+      максимум 1024 символа (без картинки — до 4096). Загрузка нового файла
+      заменит текущую картинку.</p>
 
     <label for="parse_mode">Разметка</label>
     <select id="parse_mode" name="parse_mode">

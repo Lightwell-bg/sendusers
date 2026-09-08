@@ -77,8 +77,7 @@ async def close_client() -> None:
         _client = None
 
 
-async def _call(token: str, method: str, payload: dict[str, Any]) -> Any:
-    resp = await get_client().post(f"{API_BASE}/bot{token}/{method}", json=payload)
+def _handle_response(resp: httpx.Response) -> Any:
     try:
         data = resp.json()
     except ValueError as exc:
@@ -102,6 +101,19 @@ async def _call(token: str, method: str, payload: dict[str, Any]) -> Any:
     raise TelegramAPIError(description, error_code)
 
 
+async def _call(token: str, method: str, payload: dict[str, Any]) -> Any:
+    resp = await get_client().post(f"{API_BASE}/bot{token}/{method}", json=payload)
+    return _handle_response(resp)
+
+
+async def _call_multipart(token: str, method: str, data: dict[str, Any],
+                          files: dict[str, Any]) -> Any:
+    resp = await get_client().post(
+        f"{API_BASE}/bot{token}/{method}", data=data, files=files
+    )
+    return _handle_response(resp)
+
+
 async def send_message(token: str, chat_id: int, text: str,
                        parse_mode: str = "") -> None:
     """Одно сообщение одному получателю. Исключения — на усмотрение воркера."""
@@ -109,6 +121,38 @@ async def send_message(token: str, chat_id: int, text: str,
     if parse_mode:
         payload["parse_mode"] = parse_mode
     await _call(token, "sendMessage", payload)
+
+
+async def send_photo(token: str, chat_id: int,
+                     photo: "str | tuple[str, bytes]",
+                     caption: str = "", parse_mode: str = "") -> Optional[str]:
+    """Отправить фото с подписью. ``photo`` — либо file_id (str) для
+    переиспользования уже загруженного в Telegram файла, либо кортеж
+    (имя, байты) для первичной загрузки. Возвращает file_id самого
+    крупного размера (чтобы вызывающий переиспользовал его дальше).
+
+    Подпись Telegram ограничена 1024 символами (валидируется в форме).
+    """
+    if isinstance(photo, str):
+        payload: dict[str, Any] = {"chat_id": chat_id, "photo": photo}
+        if caption:
+            payload["caption"] = caption
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        result = await _call(token, "sendPhoto", payload)
+    else:
+        filename, content = photo
+        data: dict[str, Any] = {"chat_id": str(chat_id)}
+        if caption:
+            data["caption"] = caption
+        if parse_mode:
+            data["parse_mode"] = parse_mode
+        files = {"photo": (filename, content, "application/octet-stream")}
+        result = await _call_multipart(token, "sendPhoto", data, files)
+
+    sizes = (result or {}).get("photo") or []
+    # последний элемент массива PhotoSize — самый крупный
+    return sizes[-1].get("file_id") if sizes else None
 
 
 async def get_chat_member_status(token: str, chat: str, user_id: int) -> str:

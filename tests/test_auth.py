@@ -90,11 +90,26 @@ def test_login_rate_limit(monkeypatch):
     from app import auth
 
     auth._failed_logins.clear()
-    assert auth.login_allowed()
+    ip = "1.2.3.4"
+    assert auth.login_allowed(ip)
     for _ in range(5):
-        auth.register_failed_login()
-    assert not auth.login_allowed()
+        auth.register_failed_login(ip)
+    assert not auth.login_allowed(ip)
     # сдвигаем все попытки за пределы окна — лимит снова открыт
-    monkeypatch.setattr(auth.time, "monotonic", lambda: auth._failed_logins[-1] + auth.LOGIN_WINDOW + 1)
-    assert auth.login_allowed()
+    monkeypatch.setattr(auth.time, "monotonic", lambda: auth._failed_logins[ip][-1] + auth.LOGIN_WINDOW + 1)
+    assert auth.login_allowed(ip)
+    auth._failed_logins.clear()
+
+
+def test_login_rate_limit_is_per_ip():
+    """Спам неверным паролем с одного IP не должен блокировать вход с другого —
+    иначе кто угодно снаружи может залочить настоящего админа."""
+    from app import auth
+
+    auth._failed_logins.clear()
+    attacker, admin = "9.9.9.9", "1.1.1.1"
+    for _ in range(5):
+        auth.register_failed_login(attacker)
+    assert not auth.login_allowed(attacker)
+    assert auth.login_allowed(admin)
     auth._failed_logins.clear()

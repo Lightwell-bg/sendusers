@@ -28,6 +28,15 @@
         {% endfor %}
       </tbody>
     </table>
+    <div class="pagination">
+      {% if has_prev %}
+        <a class="button-secondary" href="/history?page={{ page - 1 }}">← Новее</a>
+      {% endif %}
+      <span class="muted">Страница {{ page }}</span>
+      {% if has_next %}
+        <a class="button-secondary" href="/history?page={{ page + 1 }}">Старее →</a>
+      {% endif %}
+    </div>
   {% else %}
     <p class="muted">Кампаний пока нет.</p>
   {% endif %}

@@ -114,6 +114,34 @@ async def test_dry_run_member_short_circuit(monkeypatch):
     assert len(set(calls)) == 1
 
 
+async def test_dry_run_checks_membership_concurrently(monkeypatch):
+    """Проверки членства нескольких получателей идут параллельно, а не
+    строго по одному — иначе на большую аудиторию dry-run растягивается
+    на десятки минут."""
+    in_flight = 0
+    max_in_flight = 0
+
+    async def fake_member_status(token, chat, user_id):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.05)
+        in_flight -= 1
+        return "left"
+
+    monkeypatch.setattr(worker.telegram, "get_chat_member_status", fake_member_status)
+    # settings — frozen dataclass, подменяем всю ссылку на объект настроек
+    import dataclasses
+    monkeypatch.setattr(worker, "settings", dataclasses.replace(worker.settings, member_check_delay=0.0))
+
+    cid = make_campaign(bots="A")  # 3 получателя в фикстуре
+    assert await worker.start_dry_run(cid)
+    await wait_campaign_task(cid)
+
+    assert max_in_flight > 1
+    assert db.get_campaign(cid)["status"] == "ready"
+
+
 async def test_dry_run_fail_open(monkeypatch):
     """Ошибка getChatMember после повтора → fail-open: юзер остаётся pending."""
 
@@ -402,3 +430,80 @@ async def test_send_test_reports_parse_error(monkeypatch):
     ok, message = await worker.send_test(cid)
     assert not ok
     assert "can't parse entities" in message
+
+
+# ---------------------------------------------------------------- картинки
+
+async def test_send_with_image_uploads_once_then_reuses_file_id(monkeypatch, tmp_path):
+    """Первому получателю картинка грузится файлом, дальше — по file_id."""
+    img = tmp_path / "pic.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n fake image bytes")
+
+    cid = await prepared_campaign(monkeypatch, bots="A")  # 3 получателя, все pending
+    db.set_campaign_image(cid, str(img))
+
+    calls = []
+
+    async def fake_send_photo(token, chat_id, photo, caption="", parse_mode=""):
+        calls.append(photo)
+        return "FILE_ID_A"
+
+    async def must_not_send_message(*a, **k):
+        raise AssertionError("для кампании с картинкой должен вызываться sendPhoto")
+
+    monkeypatch.setattr(worker.telegram, "send_photo", fake_send_photo)
+    monkeypatch.setattr(worker.telegram, "send_message", must_not_send_message)
+
+    assert await worker.start_send(cid)
+    await wait_campaign_task(cid)
+
+    assert db.get_campaign(cid)["status"] == "done"
+    st = statuses_map(cid)
+    assert all(v == "sent" for v in st.values())
+    assert len(calls) == 3
+    assert isinstance(calls[0], tuple)          # первая — загрузка файла (имя, байты)
+    assert calls[1] == "FILE_ID_A"              # дальше переиспользуем file_id
+    assert calls[2] == "FILE_ID_A"
+
+
+async def test_send_with_missing_image_pauses_without_burning(monkeypatch):
+    """Файл картинки пропал — кампания на паузу, получатели не тронуты."""
+    cid = await prepared_campaign(monkeypatch, bots="A")
+    db.set_campaign_image(cid, "definitely/missing/file.png")
+
+    sent = False
+
+    async def fake_send_photo(*a, **k):
+        nonlocal sent
+        sent = True
+
+    monkeypatch.setattr(worker.telegram, "send_photo", fake_send_photo)
+
+    assert await worker.start_send(cid)
+    await wait_campaign_task(cid)
+
+    assert db.get_campaign(cid)["status"] == "paused"
+    assert not sent
+    st = statuses_map(cid)
+    assert all(v == "pending" for v in st.values())
+    assert "не найден" in db.get_campaign(cid)["totals_json"]
+
+
+async def test_send_test_with_image(monkeypatch, tmp_path):
+    img = tmp_path / "p.png"
+    img.write_bytes(b"imgdata")
+    cid = make_campaign(bots="A,B")
+    db.set_campaign_image(cid, str(img))
+
+    photos = []
+
+    async def fake_send_photo(token, chat_id, photo, caption="", parse_mode=""):
+        photos.append((chat_id, photo))
+
+    monkeypatch.setattr(worker.telegram, "send_photo", fake_send_photo)
+
+    ok, message = await worker.send_test(cid)
+    assert ok
+    # admin_chat_id = 1 (conftest), оба бота, каждый грузит файл
+    assert [p[0] for p in photos] == [1, 1]
+    assert all(isinstance(p[1], tuple) for p in photos)

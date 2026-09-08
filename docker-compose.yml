@@ -18,12 +18,17 @@
 # 4. HOST_PORT — порт НА ХОСТЕ (внутри контейнера всегда 8080, см. Dockerfile).
 #    На этом VPS уже заняты: 8080 (medvopros-app), 8081 (vetvopros-app),
 #    5000 (bginfoai) — выбирайте свободный порт (по умолчанию 8090).
+# 5. BIND_ADDR — на каком адресе хоста слушать:
+#    127.0.0.1 (по умолчанию) — только локально, доступ через SSH-туннель (безопасно).
+#    0.0.0.0 — открыть порт всему интернету по IP сервера (БЕЗ HTTPS: пароль и
+#    cookie пойдут открытым текстом; включайте, только понимая риск, лучше за
+#    firewall-whitelist или reverse-proxy с TLS).
 services:
   broadcast-admin:
     build: .
     env_file: .env
     ports:
-      - "127.0.0.1:${HOST_PORT:-8090}:8080"
+      - "${BIND_ADDR:-127.0.0.1}:${HOST_PORT:-8090}:8080"
     volumes:
       - ./data:/app/data
       - ${BOT_A_DATA_DIR:-../bginfobot/data}:/dbs/bot_a:ro

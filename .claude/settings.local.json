@@ -14,7 +14,13 @@
       "Bash(node \"C:/Users/Vlad/.claude/plugins/cache/openai-codex/codex/1.0.5/scripts/codex-companion.mjs\" result task-mr93grgy-844ui2)",
       "Read(//opt/bginfobot/**)",
       "Read(//opt/**)",
-      "Bash(cd \"d:/1PythonProjects/20260706SendUser/sendusers\" && rm -f data/broadcast_smoke.db* && echo cleaned)"
+      "Bash(cd \"d:/1PythonProjects/20260706SendUser/sendusers\" && rm -f data/broadcast_smoke.db* && echo cleaned)",
+      "PowerShell($env:TELEGRAM_BOT_TOKEN_A='x'; $env:TELEGRAM_BOT_TOKEN_B='x'; $env:ADMIN_PASSWORD='p'; $env:SECRET_KEY='s'; $env:BOT_A_DB_PATH='data/nope_a.sqlite'; $env:BOT_B_DB_PATH='data/nope_b.db'; $env:BROADCAST_DB_PATH='data/broadcast_smoke.db'; $env:UPLOADS_DIR='data/uploads_smoke'; .venv\\\\Scripts\\\\python.exe \"C:\\\\Users\\\\Vlad\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--1PythonProjects-20260706SendUser-sendusers\\\\85b74d42-fed0-4fb7-9fb6-0e0595f15b09\\\\scratchpad\\\\smoke_form.py\")",
+      "PowerShell($env:PYTHONPATH='d:\\\\1PythonProjects\\\\20260706SendUser\\\\sendusers'; $env:TELEGRAM_BOT_TOKEN_A='x'; $env:TELEGRAM_BOT_TOKEN_B='x'; $env:ADMIN_PASSWORD='p'; $env:SECRET_KEY='s'; $env:BOT_A_DB_PATH='data/nope_a.sqlite'; $env:BOT_B_DB_PATH='data/nope_b.db'; $env:BROADCAST_DB_PATH='data/broadcast_smoke.db'; $env:UPLOADS_DIR='data/uploads_smoke'; .venv\\\\Scripts\\\\python.exe \"C:\\\\Users\\\\Vlad\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--1PythonProjects-20260706SendUser-sendusers\\\\85b74d42-fed0-4fb7-9fb6-0e0595f15b09\\\\scratchpad\\\\smoke_form.py\")",
+      "Bash(cd \"d:/1PythonProjects/20260706SendUser/sendusers\" && rm -f data/broadcast_smoke.db* && rm -rf data/uploads_smoke && echo cleaned)",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"print\\('fallback ok'\\)\")",
+      "Bash(./.venv/Scripts/python.exe -c ' *)"
     ],
     "additionalDirectories": [
       "D:\\1PythonProjects\\20260706SendUser\\sendusers\\data"

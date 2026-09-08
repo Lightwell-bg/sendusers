@@ -23,11 +23,11 @@ app/
   db.py             # собственная БД сервиса: кампании, получатели, кэш членства (НЕ трогать)
   sources.py        # read-only доступ к базам ботов A и B
   auth.py           # логин, cookie-сессия, CSRF
-  worker.py         # фоновая рассылка / dry-run (добавляется отдельно)
-  telegram.py       # обёртка над Telegram Bot API (добавляется отдельно)
-  main.py           # FastAPI-приложение и все HTTP-роуты
+  worker.py         # фоновая рассылка / dry-run
+  telegram.py       # обёртка над Telegram Bot API
+  main.py           # FastAPI-приложение и все HTTP-роуты (+ /health)
   templates/        # HTML-шаблоны (Jinja2), интерфейс на русском
-  static/           # style.css, htmx.min.js
+  static/           # style.css, htmx.min.js, editor.js (панель форматирования)
 tests/              # pytest
 data/               # локальная база broadcast.db (в .gitignore)
 requirements.txt
@@ -75,6 +75,7 @@ README_broadcast.md  # инструкция по деплою на VPS
 | `BOT_A_DATA_DIR` | Каталог **на хосте (VPS)** с базой бота A (только `bot_data.sqlite`, ничего лишнего) — монтируется целиком, read-only | Например `/opt/bginfobot/data` |
 | `BOT_B_DB_HOST_PATH` | Путь **на хосте (VPS)** к файлу `chat_logs.db` бота B — монтируется только этот файл (не вся папка), т.к. рядом лежат исходники и `.env` бота B с его токеном | Например `/opt/bginfoai/chat_logs.db` |
 | `BROADCAST_DB_PATH` | Путь к собственной базе сервиса (кампании, снапшоты, кэш) | По умолчанию `data/broadcast.db` |
+| `UPLOADS_DIR` | Каталог для загруженных картинок кампаний | По умолчанию `data/uploads` (внутри тома `./data`) |
 | `EXCLUDE_CHATS` | Список чатов-исключений через запятую (участников не рассылаем) | По умолчанию `@bginfosuchat,@bginfosu` |
 | `SEND_DELAY` | Пауза между отправками сообщений, сек | По умолчанию `0.08` (~12 сообщений/сек, лимит Telegram) |
 | `MEMBER_CHECK_DELAY` | Пауза между вызовами `getChatMember`, сек | По умолчанию `0.1` |
@@ -83,6 +84,8 @@ README_broadcast.md  # инструкция по деплою на VPS
 | `HOST` / `PORT` | Адрес и порт, на которых слушает сервис | По умолчанию `127.0.0.1:8080` — наружу не выставлять |
 | `HOST_PORT` | Порт **на хосте** для docker-compose (внутри контейнера всегда 8080) | Сменить, если порт занят другим проектом на сервере, см. `README_broadcast.md` |
 | `COOKIE_SECURE` | Secure-флаг сессионной cookie | `0` при доступе через SSH-туннель, `1` — если админка за HTTPS |
+| `LOG_LEVEL` | Уровень логирования | По умолчанию `INFO` — нужен, чтобы прогресс кампаний и resume после рестарта были видны в `docker compose logs` |
+| `MEMBERSHIP_CHECK_CONCURRENCY` | Сколько получателей проверять на членство в exclude-чатах одновременно во время dry-run | По умолчанию `5` |
 
 Документация Telegram Bot API: https://core.telegram.org/bots/api
 
@@ -100,6 +103,11 @@ README_broadcast.md  # инструкция по деплою на VPS
   (статус `paused`), никто не «сжигается» — исправьте текст и продолжите.
 - Сервис должен работать строго в один процесс (никаких `uvicorn --workers`):
   на этом держится защита от двойного запуска кампании.
+
+## Проверка работоспособности
+
+`GET /health` — без авторизации, для деплой-скриптов/мониторинга: `{"status": "ok"}`
+при 200, если процесс поднялся и своя база рассылок отвечает, иначе 503.
 
 ## Тесты
 

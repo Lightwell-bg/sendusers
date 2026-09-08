@@ -4,7 +4,10 @@
   <h1>{{ campaign.title }}</h1>
   <p class="muted">Боты: {{ campaign.bots }} · Разметка: {{ campaign.parse_mode or 'без разметки' }} · Создана: {{ campaign.created_at }}</p>
 
-  <h2>Текст сообщения</h2>
+  <h2>{% if campaign.image_path %}Картинка и подпись{% else %}Текст сообщения{% endif %}</h2>
+  {% if campaign.image_path %}
+    <img class="campaign-image" src="/campaigns/{{ campaign.id }}/image" alt="картинка кампании">
+  {% endif %}
   <pre class="message-preview">{{ campaign.message_text }}</pre>
 
   <h2>Статус и счётчики</h2>

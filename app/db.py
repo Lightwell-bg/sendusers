@@ -3,8 +3,12 @@
 Кампании, снапшоты получателей, кэш членства в чатах, постоянный список
 заблокировавших бота. Базы ботов этот модуль не трогает (см. sources.py).
 
-SQLite в режиме WAL, одно соединение на процесс, сериализация записи
-через threading.Lock (FastAPI sync-роуты работают в тредпуле).
+SQLite в режиме WAL, одно соединение на процесс. Все роуты в app/main.py —
+``async def`` и выполняются прямо в event loop (не в тредпуле), поэтому в
+текущей модели запросы к этой БД никогда не идут из разных потоков
+одновременно; threading.Lock ниже — подстраховка на случай, если это
+изменится (например, появится sync-роут или отдельный поток), а не защита
+от актуальной гонки.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
     message_text  TEXT NOT NULL,
     parse_mode    TEXT NOT NULL DEFAULT 'HTML',
     bots          TEXT NOT NULL,                -- 'A' | 'B' | 'A,B'
+    image_path    TEXT,                         -- путь к картинке (sendPhoto) или NULL
     status        TEXT NOT NULL DEFAULT 'draft',
     created_at    TEXT NOT NULL,
     dry_run_at    TEXT,
@@ -94,7 +99,16 @@ def get_conn() -> sqlite3.Connection:
 def init_db() -> None:
     with _lock:
         get_conn().executescript(_SCHEMA)
+        _migrate(get_conn())
         get_conn().commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Мягкие миграции для уже существующей broadcast.db (CREATE TABLE
+    IF NOT EXISTS не добавляет колонки в существующую таблицу)."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(campaigns)")}
+    if "image_path" not in cols:
+        conn.execute("ALTER TABLE campaigns ADD COLUMN image_path TEXT")
 
 
 def close_db() -> None:
@@ -123,10 +137,17 @@ def get_campaign(campaign_id: int) -> Optional[sqlite3.Row]:
     ).fetchone()
 
 
-def list_campaigns() -> list[sqlite3.Row]:
-    return get_conn().execute(
-        "SELECT * FROM campaigns ORDER BY id DESC"
-    ).fetchall()
+def list_campaigns(limit: Optional[int] = None, offset: int = 0) -> list[sqlite3.Row]:
+    sql = "SELECT * FROM campaigns ORDER BY id DESC"
+    params: list[Any] = []
+    if limit is not None:
+        sql += " LIMIT ? OFFSET ?"
+        params = [limit, offset]
+    return get_conn().execute(sql, params).fetchall()
+
+
+def count_campaigns() -> int:
+    return get_conn().execute("SELECT COUNT(*) FROM campaigns").fetchone()[0]
 
 
 def transition_campaign(campaign_id: int, from_statuses: Iterable[str], to_status: str) -> bool:
@@ -151,6 +172,16 @@ def transition_campaign(campaign_id: int, from_statuses: Iterable[str], to_statu
         )
         get_conn().commit()
         return cur.rowcount == 1
+
+
+def set_campaign_image(campaign_id: int, image_path: Optional[str]) -> None:
+    """Привязать/снять картинку кампании (image_path=None — убрать)."""
+    with _lock:
+        get_conn().execute(
+            "UPDATE campaigns SET image_path=? WHERE id=?",
+            (image_path, campaign_id),
+        )
+        get_conn().commit()
 
 
 def set_campaign_totals(campaign_id: int, totals: dict) -> None:

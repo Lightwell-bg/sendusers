@@ -19,8 +19,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -39,6 +39,19 @@ from .auth import (
 from .config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _configure_logging() -> None:
+    """Без этого INFO-логи (прогресс dry-run/отправки, resume после
+    рестарта) молча теряются: без явной настройки root-логгер отдаёт в
+    stderr только WARNING и выше, а именно stderr смотрит `docker compose
+    logs`."""
+    level = getattr(logging, settings.log_level, logging.INFO)
+    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger().setLevel(level)
+
+
+_configure_logging()
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -83,6 +96,7 @@ templates.env.globals["bot_labels"] = settings.bot_labels
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    Path(settings.uploads_dir).mkdir(parents=True, exist_ok=True)
     from . import worker  # локальный импорт: модуль появится позже
 
     await worker.resume_on_startup()
@@ -111,6 +125,78 @@ def parse_bots(bots: list[str]) -> str:
     return ",".join(order)
 
 
+# --- работа с картинками кампаний ---
+
+# Лимиты Telegram: подпись к фото 1024 символа, обычный текст 4096;
+# фото до 10 МБ. Разрешаем распространённые растровые форматы.
+CAPTION_LIMIT = 1024
+TEXT_LIMIT = 4096
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+ALLOWED_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
+
+def message_length_error(text: str, has_image: bool) -> str | None:
+    limit = CAPTION_LIMIT if has_image else TEXT_LIMIT
+    if len(text) > limit:
+        kind = "подписи к фото" if has_image else "текста"
+        return f"Превышен лимит {kind}: {len(text)} символов при максимуме {limit}"
+    return None
+
+
+def _upload_is_present(upload: UploadFile | None) -> bool:
+    return upload is not None and bool(upload.filename)
+
+
+def _looks_like_image(content: bytes) -> bool:
+    """Сигнатура файла (magic bytes), а не только расширение — иначе
+    переименованный не-image файл проходит форму и падает только во время
+    настоящей рассылки."""
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return True
+    if content.startswith(b"\xff\xd8\xff"):
+        return True
+    if content.startswith((b"GIF87a", b"GIF89a")):
+        return True
+    if content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return True
+    return False
+
+
+async def save_campaign_image(campaign_id: int, upload: UploadFile) -> str:
+    """Сохранить загруженную картинку как data/uploads/{id}.{ext}. Возвращает
+    путь. Бросает ValueError при неверном формате/размере."""
+    ext = Path(upload.filename).suffix.lower()
+    if ext not in ALLOWED_IMAGE_EXT:
+        raise ValueError(
+            f"Неподдерживаемый формат {ext or '?'}. Разрешены: "
+            + ", ".join(sorted(ALLOWED_IMAGE_EXT))
+        )
+    content = await upload.read()
+    if len(content) > MAX_IMAGE_BYTES:
+        raise ValueError(
+            f"Файл слишком большой: {len(content) // 1024} КБ при лимите "
+            f"{MAX_IMAGE_BYTES // (1024 * 1024)} МБ"
+        )
+    if not content:
+        raise ValueError("Пустой файл")
+    if not _looks_like_image(content):
+        raise ValueError("Файл не похож на изображение (неверная сигнатура)")
+    uploads = Path(settings.uploads_dir)
+    uploads.mkdir(parents=True, exist_ok=True)
+    # чистим ранее сохранённые варианты с другим расширением
+    for old in uploads.glob(f"{campaign_id}.*"):
+        old.unlink(missing_ok=True)
+    dest = uploads / f"{campaign_id}{ext}"
+    dest.write_bytes(content)
+    return str(dest)
+
+
+def remove_campaign_image(campaign_id: int, image_path: str | None) -> None:
+    if image_path:
+        Path(image_path).unlink(missing_ok=True)
+    db.set_campaign_image(campaign_id, None)
+
+
 # ------------------------------------------------------------------- login
 
 
@@ -121,10 +207,11 @@ async def login_form(request: Request):
 
 @app.post("/login")
 async def login_submit(request: Request, password: str = Form("")):
-    if not login_allowed():
+    client_ip = request.client.host if request.client else "unknown"
+    if not login_allowed(client_ip):
         return redirect("/login", "Слишком много попыток входа, подождите 5 минут")
     if not check_password(password):
-        register_failed_login()
+        register_failed_login(client_ip)
         await asyncio.sleep(1)  # замедляем перебор
         return redirect("/login", "Неверный пароль")
     token = make_session_token()
@@ -141,6 +228,20 @@ async def logout(request: Request, csrf: str = Form("")):
     return response
 
 
+# ----------------------------------------------------------------- health
+
+
+@app.get("/health")
+async def health():
+    """Без авторизации — только чтобы деплой-скрипт мог одной командой
+    проверить, что процесс поднялся и своя база рассылок отвечает."""
+    try:
+        db.get_conn().execute("SELECT 1")
+    except Exception:
+        raise HTTPException(status_code=503, detail="db unavailable")
+    return {"status": "ok"}
+
+
 # --------------------------------------------------------------- дашборд
 
 
@@ -151,15 +252,28 @@ async def dashboard(request: Request):
         "dashboard.html",
         source_stats=sources.source_stats(),
         blocked_stats=db.dashboard_stats(),
-        recent_campaigns=db.list_campaigns()[:10],
+        recent_campaigns=db.list_campaigns(limit=10),
         csrf=csrf_token(request),
     )
 
 
+HISTORY_PAGE_SIZE = 50
+
+
 @app.get("/history", dependencies=[Depends(require_auth)])
-async def history(request: Request):
+async def history(request: Request, page: int = 1):
+    page = max(1, page)
+    total = db.count_campaigns()
+    offset = (page - 1) * HISTORY_PAGE_SIZE
+    campaigns = db.list_campaigns(limit=HISTORY_PAGE_SIZE, offset=offset)
     return render(
-        request, "history.html", campaigns=db.list_campaigns(), csrf=csrf_token(request)
+        request,
+        "history.html",
+        campaigns=campaigns,
+        csrf=csrf_token(request),
+        page=page,
+        has_next=offset + HISTORY_PAGE_SIZE < total,
+        has_prev=page > 1,
     )
 
 
@@ -184,13 +298,24 @@ async def campaign_create(
     message_text: str = Form(...),
     parse_mode: str = Form(""),
     bots: list[str] = Form([]),
+    image: UploadFile | None = File(None),
     csrf: str = Form(""),
 ):
     verify_csrf(request, csrf)
     bots_str = parse_bots(bots)
     if not bots_str:
         return redirect("/campaigns/new", "Выберите хотя бы одного бота")
+    has_image = _upload_is_present(image)
+    err = message_length_error(message_text, has_image)
+    if err:
+        return redirect("/campaigns/new", err)
     campaign_id = db.create_campaign(title, message_text, parse_mode, bots_str)
+    if has_image:
+        try:
+            path = await save_campaign_image(campaign_id, image)
+            db.set_campaign_image(campaign_id, path)
+        except ValueError as e:
+            return redirect(f"/campaigns/{campaign_id}", f"Картинка не сохранена: {e}")
     return redirect(f"/campaigns/{campaign_id}")
 
 
@@ -239,16 +364,48 @@ async def campaign_edit_submit(
     message_text: str = Form(...),
     parse_mode: str = Form(""),
     bots: list[str] = Form([]),
+    image: UploadFile | None = File(None),
+    remove_image: str = Form(""),
     csrf: str = Form(""),
 ):
     verify_csrf(request, csrf)
     bots_str = parse_bots(bots)
     if not bots_str:
         return redirect(f"/campaigns/{campaign_id}/edit", "Выберите хотя бы одного бота")
+    campaign = db.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Кампания не найдена")
+    new_upload = _upload_is_present(image)
+    # какая картинка будет после сохранения: новая, снятая или прежняя
+    will_have_image = new_upload or (bool(campaign["image_path"]) and not remove_image)
+    err = message_length_error(message_text, will_have_image)
+    if err:
+        return redirect(f"/campaigns/{campaign_id}/edit", err)
+
     ok = db.update_campaign_text(campaign_id, title, message_text, parse_mode, bots_str)
     if not ok:
         return redirect(f"/campaigns/{campaign_id}", "Не удалось сохранить: недопустимый статус")
+    # порядок: сначала удаление (по флагу), затем возможная новая загрузка
+    if remove_image and campaign["image_path"]:
+        remove_campaign_image(campaign_id, campaign["image_path"])
+    if new_upload:
+        try:
+            path = await save_campaign_image(campaign_id, image)
+            db.set_campaign_image(campaign_id, path)
+        except ValueError as e:
+            return redirect(f"/campaigns/{campaign_id}", f"Текст сохранён, но картинка — нет: {e}")
     return redirect(f"/campaigns/{campaign_id}", "Изменения сохранены")
+
+
+@app.get("/campaigns/{campaign_id}/image", dependencies=[Depends(require_auth)])
+async def campaign_image(campaign_id: int):
+    campaign = db.get_campaign(campaign_id)
+    if campaign is None or not campaign["image_path"]:
+        raise HTTPException(status_code=404, detail="Картинка не найдена")
+    path = Path(campaign["image_path"])
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Файл картинки отсутствует")
+    return FileResponse(str(path))
 
 
 @app.post("/campaigns/{campaign_id}/dry_run", dependencies=[Depends(require_auth)])

@@ -33,6 +33,9 @@ class Settings:
     bot_a_db_path: str = ""      # bot_data.sqlite (read-only)
     bot_b_db_path: str = ""      # chat_logs.db   (read-only)
 
+    # Каталог для загруженных картинок кампаний
+    uploads_dir: str = "data/uploads"
+
     # Чаты-исключения (участников не рассылаем)
     exclude_chats: tuple[str, ...] = ()
 
@@ -55,6 +58,15 @@ class Settings:
     # SSH-туннель по http://127.0.0.1. Включить (1), если админка за HTTPS.
     cookie_secure: bool = False
 
+    # Уровень логирования (см. app/main.py: _configure_logging). INFO нужен,
+    # чтобы прогресс dry-run/отправки и resume после рестарта были видны в
+    # `docker compose logs` — без этого доходят только WARNING и выше.
+    log_level: str = "INFO"
+    # Сколько получателей проверять на членство в exclude-чатах одновременно
+    # во время dry-run (иначе проверка идёт строго по одному и на аудиторию
+    # в тысячи человек может занимать десятки минут).
+    membership_check_concurrency: int = 5
+
 
 def load_settings() -> Settings:
     return Settings(
@@ -67,6 +79,7 @@ def load_settings() -> Settings:
             "B": os.environ.get("BOT_B_LABEL", "@bginfosuai_bot"),
         },
         broadcast_db_path=os.environ.get("BROADCAST_DB_PATH", "data/broadcast.db"),
+        uploads_dir=os.environ.get("UPLOADS_DIR", "data/uploads"),
         bot_a_db_path=_require("BOT_A_DB_PATH"),
         bot_b_db_path=_require("BOT_B_DB_PATH"),
         exclude_chats=tuple(
@@ -86,6 +99,8 @@ def load_settings() -> Settings:
         host=os.environ.get("HOST", "127.0.0.1"),
         port=int(os.environ.get("PORT", "8080")),
         cookie_secure=os.environ.get("COOKIE_SECURE", "0").lower() in ("1", "true", "yes"),
+        log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        membership_check_concurrency=int(os.environ.get("MEMBERSHIP_CHECK_CONCURRENCY", "5")),
     )
 
 
